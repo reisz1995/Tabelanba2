@@ -40,9 +40,10 @@ async function atualizarNBA() {
 
   const json = await response.json();
 
-  const entries =
-    json.children?.[0]?.standings?.entries ||
-    json.children?.[1]?.standings?.entries;
+  const entries = [
+  ...(json.children?.[0]?.standings?.entries || []),
+  ...(json.children?.[1]?.standings?.entries || [])
+];
 
   if (!entries || entries.length === 0) {
     throw new Error("Nenhum dado retornado pela ESPN");
