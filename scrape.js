@@ -1,17 +1,16 @@
-import fetch from "node-fetch";
 import cheerio from "cheerio";
 import { createClient } from "@supabase/supabase-js";
 
 /**
  * ======================================================
- * CONFIGURAÇÃO SUPABASE
+ * SUPABASE
  * ======================================================
  */
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
-  console.error("❌ Variáveis SUPABASE não configuradas");
+  console.error("❌ Variáveis do Supabase não encontradas");
   process.exit(1);
 }
 
@@ -29,8 +28,7 @@ async function scrapeNBA() {
 
   const response = await fetch(URL);
   if (!response.ok) {
-    console.error("❌ Erro ao acessar site NBA");
-    process.exit(1);
+    throw new Error("Erro ao acessar site da NBA");
   }
 
   const html = await response.text();
@@ -40,64 +38,47 @@ async function scrapeNBA() {
 
   $("table tbody tr").each((_, el) => {
     const cols = $(el).find("td");
-
-    if (cols.length < 6) return;
+    if (cols.length < 5) return;
 
     const time = $(cols[0]).text().trim();
-    const vitorias = parseInt($(cols[1]).text().trim(), 10);
-    const derrotas = parseInt($(cols[2]).text().trim(), 10);
+    const vitorias = Number($(cols[1]).text().trim());
+    const derrotas = Number($(cols[2]).text().trim());
 
     if (!time || isNaN(vitorias) || isNaN(derrotas)) return;
 
-    dados.push({
-      time,
-      vitorias,
-      derrotas
-    });
+    dados.push({ time, vitorias, derrotas });
   });
 
   if (dados.length === 0) {
-    console.error("❌ Nenhum dado coletado. Layout pode ter mudado.");
-    process.exit(1);
+    throw new Error("Nenhum dado coletado — layout mudou");
   }
 
   console.log(`📊 ${dados.length} times coletados`);
 
-  /**
-   * ======================================================
-   * SALVAR NO SUPABASE
-   * ======================================================
-   */
-
-  // Limpa tabela antes de inserir
-  const { error: deleteError } = await supabase
+  // Limpa tabela
+  const { error: delError } = await supabase
     .from("classificacao_nba")
     .delete()
     .neq("id", 0);
 
-  if (deleteError) {
-    console.error("❌ Erro ao limpar tabela:", deleteError);
-    process.exit(1);
+  if (delError) {
+    throw delError;
   }
 
-  const { data, error } = await supabase
+  // Insere novos dados
+  const { error: insError } = await supabase
     .from("classificacao_nba")
     .insert(dados);
 
-  if (error) {
-    console.error("❌ Erro ao inserir dados:", error);
-    process.exit(1);
+  if (insError) {
+    throw insError;
   }
 
-  console.log(`✅ ${data.length} times inseridos no Supabase`);
+  console.log("🏀 NBA atualizada com sucesso");
 }
 
-scrapeNBA()
-  .then(() => {
-    console.log("🏀 NBA atualizada com sucesso");
-    process.exit(0);
-  })
-  .catch((err) => {
-    console.error("❌ Erro geral:", err);
-    process.exit(1);
-  });
+scrapeNBA().catch((err) => {
+  console.error("❌ Erro:", err.message);
+  process.exit(1);
+});
+  
