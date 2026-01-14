@@ -39,8 +39,8 @@ async function run() {
     });
   });
 
-  await supabase.from("nba_classificacao").delete().neq("id", "");
-  await supabase.from("nba_classificacao").insert(data);
+  await supabase.from("classificacao_nba").delete().neq("id", "");
+  await supabase.from("classificacao_nba").insert(data);
 
   console.log("NBA atualizada com sucesso");
 }
