@@ -1,42 +1,64 @@
 import pandas as pd
+import numpy as np
 from supabase import create_client
 import os
+import re
 
-# Configurações de acesso (Use variáveis de ambiente por segurança)
+# Configurações de acesso
 url_supabase = os.environ.get("SUPABASE_URL")
 chave_supabase = os.environ.get("SUPABASE_KEY")
 supabase = create_client(url_supabase, chave_supabase)
 
+def clean_numeric(x):
+    """Remove caracteres especiais e converte para float, retorna None se falhar"""
+    if pd.isna(x) or x == '-':
+        return None
+    try:
+        # Remove '+' e converte para float
+        return float(str(x).replace('+', ''))
+    except:
+        return None
+
 def atualizar_dados_nba():
-    # 1. Extração dos dados
     url_espn = "https://www.espn.com.br/nba/classificacao/_/grupo/liga"
     
-    # O Pandas lê as tabelas. Geralmente a ESPN divide Nome do Time e Estatísticas
+    # 1. Extração
     tabelas = pd.read_html(url_espn)
-    
-    # Unindo as tabelas (Time + Dados)
     df_nomes = tabelas[0]
     df_stats = tabelas[1]
     df_final = pd.concat([df_nomes, df_stats], axis=1)
 
-    # 2. Mapeamento das colunas (conforme o CSV que você enviou)
+    # 2. Renomear Colunas
     df_final.columns = [
         'time_nome', 'vitorias', 'derrotas', 'pct_vitoria', 'jogos_atras', 
         'casa', 'visitante', 'divisao', 'conferencia', 'pontos_pro', 
         'pontos_contra', 'diferenca_pontos', 'sequencia', 'ultimos_10'
     ]
 
-    # Limpeza rápida: Remover nomes de conferência extras se houver
-    df_final['time_nome'] = df_final['time_nome'].str.replace(r'^[a-z]-', '', regex=True)
+    # 3. Limpeza de Dados (O segredo para evitar o erro de JSON)
+    
+    # Limpar nomes dos times (remove prefixos de classificação como '1-')
+    df_final['time_nome'] = df_final['time_nome'].apply(lambda x: re.sub(r'^\d+-', '', str(x)))
 
-    # 3. Transformar em lista de dicionários para o Supabase
+    # Tratar colunas numéricas para garantir que não existam NaNs incompatíveis
+    cols_numericas = ['vitorias', 'derrotas', 'pct_vitoria', 'pontos_pro', 'pontos_contra', 'diferenca_pontos']
+    for col in cols_numericas:
+        df_final[col] = df_final[col].apply(clean_numeric)
+
+    # Converter todo o resto que for NaN para None (null no SQL)
+    df_final = df_final.replace({np.nan: None})
+
+    # 4. Enviar para o Supabase
     dados_para_upsert = df_final.to_dict(orient='records')
 
-    # 4. Enviar para o Supabase (Upsert baseado no time_nome)
     for dado in dados_para_upsert:
-        supabase.table("classificacao_nba").upsert(dado, on_conflict="time_nome").execute()
+        try:
+            supabase.table("classificacao_nba").upsert(dado, on_conflict="time_nome").execute()
+        except Exception as e:
+            print(f"Erro ao inserir time {dado.get('time_nome')}: {e}")
     
-    print("Banco de dados NBA atualizado com sucesso!")
+    print("Processo concluído!")
 
 if __name__ == "__main__":
     atualizar_dados_nba()
+    
