@@ -21,26 +21,26 @@ async function run() {
     if (cols.length < 14) return;
 
     data.push({
-      team: $(cols[0]).text().trim(),
-      wins: Number($(cols[1]).text()),
-      losses: Number($(cols[2]).text()),
-      win_pct: Number($(cols[3]).text()),
-      games_back: $(cols[4]).text() === "-" ? 0 : Number($(cols[4]).text()),
-      home_record: $(cols[5]).text(),
-      away_record: $(cols[6]).text(),
-      division_record: $(cols[7]).text(),
-      conference_record: $(cols[8]).text(),
-      points_for: Number($(cols[9]).text()),
-      points_against: Number($(cols[10]).text()),
-      point_diff: Number($(cols[11]).text()),
-      streak: $(cols[12]).text(),
-      last_10: $(cols[13]).text(),
-      season: "2025-26"
+      time: $(cols[0]).text().trim(),
+      vitorias: Number($(cols[1]).text()),
+      derrotas: Number($(cols[2]).text()),
+      casa: $(cols[5]).text(),
+      visitante: $(cols[6]).text(),
+      pontos: Number($(cols[9]).text()),
+      pontos_contra: Number($(cols[10]).text()),
+      sequencia: $(cols[12]).text(),
+      ultimos_10: $(cols[13]).text()
     });
   });
 
-  await supabase.from("classificacao_nba").delete().neq("id", "");
-  await supabase.from("classificacao_nba").insert(data);
+  await supabase.from("classificacao_nba").delete().neq("id", 0);
+
+   const { error } = await supabase.from("classificacao_nba").insert(data);
+
+  if (error) {
+    console.error(error);
+    process.exit(1);
+  }
 
   console.log("NBA atualizada com sucesso");
 }
