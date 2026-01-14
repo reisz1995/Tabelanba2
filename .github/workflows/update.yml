@@ -1,24 +1,28 @@
-name: Atualizar NBA Standings
+name: Atualizar tabela NBA
 
 on:
   schedule:
-    - cron: "0 */6 * * *"
+    - cron: "0 9 * * *" # todos os dias às 09:00 UTC
   workflow_dispatch:
 
 jobs:
-  update:
+  update-nba:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - run: npm install node-fetch cheerio @supabase/supabase-js
+      - name: Instalar dependências
+        run: npm install
 
-      - run: node scrape.js
+      - name: Executar scraper
+        run: node scrape.js
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
