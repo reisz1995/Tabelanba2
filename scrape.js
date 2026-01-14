@@ -58,8 +58,18 @@ async function atualizarNBA() {
       time: e.team.displayName,
       v: stats.wins,
       d: stats.losses,
-      pts: stats.pointsFor,
+      pct_vit: stats.winPercent,
+      ja: stats.gamesPlayed,
+      casa: stats.Home,
       visitante: stats.Road,
+      div: stats.vsDiv,
+      conf: stats.vsConf,
+      pts: stats.pointsFor,
+      pts_contra: stats.pointsAgainst,
+      dif: stats.pointDifferential,
+      strk: stats.streak,
+      u10: stats.Last10,
+      
     };
   });
 
