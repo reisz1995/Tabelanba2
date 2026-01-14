@@ -1,4 +1,3 @@
-import * as cheerio from "cheerio";
 import { createClient } from "@supabase/supabase-js";
 
 /**
@@ -18,42 +17,35 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
 /**
  * ======================================================
- * SCRAPER NBA
+ * NBA API
  * ======================================================
  */
-const URL = "https://www.nba.com/standings";
+const NBA_API =
+  "https://cdn.nba.com/static/json/liveData/standings/leagueStandings.json";
 
-async function scrapeNBA() {
+async function atualizarNBA() {
   console.log("⏳ Buscando classificação NBA...");
 
-  const response = await fetch(URL);
+  const response = await fetch(NBA_API);
   if (!response.ok) {
-    throw new Error("Erro ao acessar site da NBA");
+    throw new Error("Erro ao acessar API da NBA");
   }
 
-  const html = await response.text();
-  const $ = cheerio.load(html);
+  const json = await response.json();
 
-  const dados = [];
+  const times = json.league.standard.teams;
 
-  $("table tbody tr").each((_, el) => {
-    const cols = $(el).find("td");
-    if (cols.length < 5) return;
-
-    const time = $(cols[0]).text().trim();
-    const vitorias = Number($(cols[1]).text().trim());
-    const derrotas = Number($(cols[2]).text().trim());
-
-    if (!time || isNaN(vitorias) || isNaN(derrotas)) return;
-
-    dados.push({ time, vitorias, derrotas });
-  });
-
-  if (dados.length === 0) {
-    throw new Error("Nenhum dado coletado — layout da NBA mudou");
+  if (!times || times.length === 0) {
+    throw new Error("Nenhum dado retornado pela API da NBA");
   }
 
-  console.log(`📊 ${dados.length} times coletados`);
+  const dados = times.map((t) => ({
+    time: t.teamName,
+    vitorias: t.wins,
+    derrotas: t.losses,
+  }));
+
+  console.log(`📊 ${dados.length} times encontrados`);
 
   // Limpa tabela
   const { error: delError } = await supabase
@@ -70,11 +62,10 @@ async function scrapeNBA() {
 
   if (insError) throw insError;
 
-  console.log("🏀 NBA atualizada com sucesso");
+  console.log("🏀 Classificação NBA atualizada com sucesso");
 }
 
-scrapeNBA().catch((err) => {
+atualizarNBA().catch((err) => {
   console.error("❌ Erro:", err.message);
   process.exit(1);
 });
-                  
