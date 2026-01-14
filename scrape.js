@@ -1,4 +1,4 @@
-import cheerio from "cheerio";
+import * as cheerio from "cheerio";
 import { createClient } from "@supabase/supabase-js";
 
 /**
@@ -50,7 +50,7 @@ async function scrapeNBA() {
   });
 
   if (dados.length === 0) {
-    throw new Error("Nenhum dado coletado — layout mudou");
+    throw new Error("Nenhum dado coletado — layout da NBA mudou");
   }
 
   console.log(`📊 ${dados.length} times coletados`);
@@ -61,18 +61,14 @@ async function scrapeNBA() {
     .delete()
     .neq("id", 0);
 
-  if (delError) {
-    throw delError;
-  }
+  if (delError) throw delError;
 
   // Insere novos dados
   const { error: insError } = await supabase
     .from("classificacao_nba")
     .insert(dados);
 
-  if (insError) {
-    throw insError;
-  }
+  if (insError) throw insError;
 
   console.log("🏀 NBA atualizada com sucesso");
 }
@@ -81,4 +77,4 @@ scrapeNBA().catch((err) => {
   console.error("❌ Erro:", err.message);
   process.exit(1);
 });
-  
+                  
