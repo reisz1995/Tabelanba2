@@ -2,7 +2,7 @@ name: Atualizar tabela NBA
 
 on:
   schedule:
-    - cron: "0 9 * * *" # todos os dias às 09:00 UTC
+    - cron: "0 */6 * * *"
   workflow_dispatch:
 
 jobs:
@@ -19,8 +19,7 @@ jobs:
           node-version: 20
 
       - name: Instalar dependências
-        run: npm install cheerio @supabase/supabase-js
-  
+        run: npm install
 
       - name: Executar scraper
         run: node scrape.js
