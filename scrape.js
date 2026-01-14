@@ -9,7 +9,7 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
-  console.error("âŒ VariÃ¡veis do Supabase nÃ£o encontradas");
+  console.error("❌ Variáveis do Supabase não encontradas");
   process.exit(1);
 }
 
@@ -24,7 +24,7 @@ const ESPN_API =
   "https://site.web.api.espn.com/apis/v2/sports/basketball/nba/standings";
 
 async function atualizarNBA() {
-  console.log("â³ Buscando classificaÃ§Ã£o NBA (ESPN)...");
+  console.log("⏳ Buscando classificação NBA (ESPN)...");
 
   const response = await fetch(ESPN_API, {
     headers: {
@@ -58,11 +58,10 @@ async function atualizarNBA() {
       time: e.team.displayName,
       vitorias: stats.wins,
       derrotas: stats.losses,
-      pts: stats.points_for,
     };
   });
 
-  console.log(`ðŸ“Š ${dados.length} times encontrados`);
+  console.log(`📊 ${dados.length} times encontrados`);
 
   // Limpa tabela
   const { error: delError } = await supabase
@@ -79,11 +78,11 @@ async function atualizarNBA() {
 
   if (insError) throw insError;
 
-  console.log("ðŸ€ ClassificaÃ§Ã£o NBA atualizada com sucesso (ESPN)");
+  console.log("🏀 Classificação NBA atualizada com sucesso (ESPN)");
 }
 
 atualizarNBA().catch((err) => {
-  console.error("âŒ Erro:", err.message);
+  console.error("❌ Erro:", err.message);
   process.exit(1);
 });
-      
+
