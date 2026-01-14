@@ -59,6 +59,7 @@ async function atualizarNBA() {
       v: stats.wins,
       d: stats.losses,
       pts: stats.pointsFor,
+      visitante: stats.Road,
     };
   });
 
