@@ -26,8 +26,17 @@ const NBA_API =
 async function atualizarNBA() {
   console.log("⏳ Buscando classificação NBA...");
 
-  const response = await fetch(NBA_API);
+  const response = await fetch(NBA_API, {
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120",
+      Accept: "application/json",
+      Referer: "https://www.nba.com/",
+    },
+  });
+
   if (!response.ok) {
+    console.error("Status HTTP:", response.status);
     throw new Error("Erro ao acessar API da NBA");
   }
 
@@ -69,3 +78,4 @@ atualizarNBA().catch((err) => {
   console.error("❌ Erro:", err.message);
   process.exit(1);
 });
+    
