@@ -2,69 +2,60 @@ import pandas as pd
 import numpy as np
 from supabase import create_client
 import os
+import re
 
 url_supabase = os.environ.get("SUPABASE_URL")
 chave_supabase = os.environ.get("SUPABASE_KEY")
 supabase = create_client(url_supabase, chave_supabase)
 
+def limpar_nome_final(nome):
+    if pd.isna(nome): return None
+    # Remove rankings (1-, 2-)
+    n = re.sub(r'^\d+-', '', str(nome))
+    # Remove siglas grudadas de 2 ou 3 letras (OKCOklahoma -> Oklahoma)
+    # Procuramos o padrão onde termina a sigla e começa o nome (Letra maiúscula seguida de minúscula)
+    match = re.search(r'[A-Z]{2,3}([A-Z][a-z].*)', n)
+    if match:
+        return match.group(1).strip()
+    return n.strip()
+
 def atualizar_banco():
     url = "https://www.espn.com.br/nba/classificacao/_/grupo/liga"
     tabelas = pd.read_html(url)
     
-    # A ESPN separa Nomes (Tabela 0) e Stats (Tabela 1)
-    # Vamos pegar apenas os números da Tabela 1, pois os nomes na Tabela 0 estão vindo sujos
-    df_stats = tabelas[1]
-    
-    # Lista Oficial da NBA na ordem exata que a ESPN costuma exibir (Geral por aproveitamento)
-    # Se o OKC é o primeiro, ele ocupará a primeira linha de dados.
-    df_stats.columns = ['vitorias', 'derrotas', 'pct_vitoria', 'jogos_atras', 
-                        'casa', 'visitante', 'divisao', 'conferencia', 'pontos_pro', 
-                        'pontos_contra', 'diferenca_pontos', 'sequencia', 'ultimos_10']
+    # Une Nomes (Tabela 0) e Dados (Tabela 1)
+    df = pd.concat([tabelas[0], tabelas[1]], axis=1)
+    df.columns = ['time_nome', 'vitorias', 'derrotas', 'pct_vitoria', 'jogos_atras', 
+                  'casa', 'visitante', 'divisao', 'conferencia', 'pontos_pro', 
+                  'pontos_contra', 'diferenca_pontos', 'sequencia', 'ultimos_10']
 
-    # Pegamos os nomes da Tabela 0 e limpamos apenas removendo a sigla de 2 ou 3 letras
-    # Ex: 'OKCOklahoma City' -> pegamos o texto após a sigla
-    def limpar_manual(nome):
-        import re
-        if pd.isna(nome): return "Time Indefinido"
-        n = re.sub(r'^\d+-', '', str(nome)) # Remove "1-"
-        # Se as 3 primeiras são maiúsculas (OKC), removemos 3. Senão, removemos 2 (NY).
-        if len(n) > 3 and n[:3].isupper() and n[3].isupper(): return n[3:]
-        if len(n) > 2 and n[:2].isupper() and n[2].isupper(): return n[2:]
-        return n
+    # 1. Aplica limpeza de nome
+    df['time_nome'] = df['time_nome'].apply(limpar_nome_final)
 
-    df_nomes = tabelas[0]
-    df_nomes.columns = ['nome_sujo']
-    df_nomes['time_nome'] = df_nomes['nome_sujo'].apply(limpar_manual)
+    # 2. FILTRO CRUCIAL: Mantém apenas linhas onde 'vitorias' é um número real
+    # Isso elimina cabeçalhos de conferência e rodapés estranhos
+    df = df[pd.to_numeric(df['vitorias'], errors='coerce').notnull()].copy()
 
-    # Junta Nome Limpo com Stats
-    df_final = pd.concat([df_nomes['time_nome'], df_stats], axis=1)
-
-    # Remove linhas de cabeçalho de conferência (onde vitórias não é número)
-    df_final = df_final[pd.to_numeric(df_final['vitorias'], errors='coerce').notnull()]
-
-    # Tratamento final de números
+    # 3. Conversão de tipos
     cols_num = ['vitorias', 'derrotas', 'pct_vitoria', 'pontos_pro', 'pontos_contra', 'diferenca_pontos']
     for col in cols_num:
-        df_final[col] = pd.to_numeric(df_final[col].astype(str).str.replace('+', ''), errors='coerce')
+        df[col] = pd.to_numeric(df[col].astype(str).str.replace('+', ''), errors='coerce')
 
-    df_final = df_final.replace({np.nan: None})
+    # 4. Garante que temos apenas os 30 times da NBA
+    df = df.head(30)
 
-    # Envio para o Supabase
-    registros = df_final.to_dict(orient='records')
+    # 5. Envio para o Supabase
+    registros = df.replace({np.nan: None}).to_dict(orient='records')
     
-    # Se por algum motivo o OKC sumiu do nome mas os dados estão lá (seu erro anterior)
-    # Forçamos o nome do primeiro colocado se ele estiver nulo ou estranho
-    if registros[0]['vitorias'] == 33 or registros[0]['vitorias'] == 34:
-        if registros[0]['time_nome'] == "Time Indefinido" or not registros[0]['time_nome']:
-            registros[0]['time_nome'] = "Oklahoma City Thunder"
-
+    sucesso = 0
     for reg in registros:
         try:
             supabase.table("classificacao_nba").upsert(reg, on_conflict="time_nome").execute()
+            sucesso += 1
         except Exception as e:
-            print(f"Erro no {reg['time_nome']}: {e}")
+            print(f"Erro no time {reg['time_nome']}: {e}")
 
-    print(f"Concluído! {len(registros)} times processados.")
+    print(f"Sucesso! {sucesso} times da NBA atualizados.")
 
 if __name__ == "__main__":
     atualizar_banco()
