@@ -1,89 +1,78 @@
 import { createClient } from "@supabase/supabase-js";
 
-/**
- * ======================================================
- * SUPABASE
- * ======================================================
- */
 const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
+const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
-if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
-  console.error("❌ Variáveis do Supabase não encontradas");
-  process.exit(1);
-}
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
-
-/**
- * ======================================================
- * ESPN NBA API
- * ======================================================
- */
-const ESPN_API =
-  "https://site.web.api.espn.com/apis/v2/sports/basketball/nba/standings";
-
-async function atualizarNBA() {
+async function buscarClassificacao() {
   console.log("⏳ Buscando classificação NBA (ESPN)...");
 
-  const response = await fetch(ESPN_API, {
-    headers: {
-      "User-Agent": "Mozilla/5.0",
-      Accept: "application/json",
-    },
-  });
-
-  if (!response.ok) {
-    console.error("Status HTTP:", response.status);
-    throw new Error("Erro ao acessar API da ESPN");
-  }
-
-  const json = await response.json();
-
-  const entries = [
-  ...(json.children?.[0]?.standings?.entries || []),
-  ...(json.children?.[1]?.standings?.entries || [])
-];
-
-  if (!entries || entries.length === 0) {
-    throw new Error("Nenhum dado retornado pela ESPN");
-  }
-
-  const dados = entries.map((e) => {
-    const stats = Object.fromEntries(
-      e.stats.map((s) => [s.name, s.value])
+  try {
+    const response = await fetch(
+      "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/standings"
     );
 
-    return {
-      time: e.team.displayName,
-      v: stats.wins,
-      d: stats.losses,
-      pts: stats.pts_pro,
-    };
-  });
+    if (!response.ok) {
+      console.log("Status HTTP:", response.status);
+      throw new Error("Erro ao acessar API da ESPN");
+    }
 
-  console.log(`📊 ${dados.length} times encontrados`);
+    const json = await response.json();
 
-  // Limpa tabela
-  const { error: delError } = await supabase
-    .from("classificacao_nba")
-    .delete()
-    .neq("id", 0);
+    const equipes = json.children[0].standings.entries;
 
-  if (delError) throw delError;
+    const dadosTratados = equipes.map((time) => {
+      const stats = time.stats;
 
-  // Insere novos dados
-  const { error: insError } = await supabase
-    .from("classificacao_nba")
-    .insert(dados);
+      const getStat = (name) =>
+        stats.find((s) => s.name === name)?.displayValue || "-";
 
-  if (insError) throw insError;
+      return {
+        time: time.team.displayName,
+        v: parseInt(getStat("wins")) || 0,
+        d: parseInt(getStat("losses")) || 0,
+        pct_vit: parseFloat(getStat("winPercent")) || 0,
+        ja: getStat("gamesPlayed"),
+        casa: getStat("Home"),
+        visitante: getStat("Road"),
+        div: getStat("vsDiv"),
+        conf: getStat("vsConf"),
+        pts: parseFloat(getStat("pointsFor")) || 0,
+        pts_contra: parseFloat(getStat("pointsAgainst")) || 0,
+        dif: getStat("pointDifferential"),
+        strk: getStat("streak"),
+        u10: getStat("Last10")
+      };
+    });
 
-  console.log("🏀 Classificação NBA atualizada com sucesso (ESPN)");
+    console.log(`📊 ${dadosTratados.length} times encontrados`);
+
+    await salvarNoSupabase(dadosTratados);
+  } catch (erro) {
+    console.log("❌ Erro:", erro.message);
+    process.exit(1);
+  }
 }
 
-atualizarNBA().catch((err) => {
-  console.error("❌ Erro:", err.message);
-  process.exit(1);
-});
+async function salvarNoSupabase(times) {
+  try {
+    // Limpa a tabela antes de inserir novos dados
+    await supabase.from("classificacao_nba").delete().neq("time", "");
 
+    const { error } = await supabase
+      .from("classificacao_nba")
+      .insert(times);
+
+    if (error) {
+      throw error;
+    }
+
+    console.log("🏀 Classificação NBA atualizada com sucesso no Supabase!");
+  } catch (erro) {
+    console.log("❌ Erro ao salvar no Supabase:", erro.message);
+    process.exit(1);
+  }
+}
+
+buscarClassificacao();
