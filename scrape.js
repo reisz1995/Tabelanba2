@@ -17,42 +17,48 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
 /**
  * ======================================================
- * NBA API
+ * ESPN NBA API
  * ======================================================
  */
-const NBA_API =
-  "https://cdn.nba.com/static/json/liveData/standings/leagueStandings.json";
+const ESPN_API =
+  "https://site.web.api.espn.com/apis/v2/sports/basketball/nba/standings";
 
 async function atualizarNBA() {
-  console.log("⏳ Buscando classificação NBA...");
+  console.log("⏳ Buscando classificação NBA (ESPN)...");
 
-  const response = await fetch(NBA_API, {
+  const response = await fetch(ESPN_API, {
     headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120",
+      "User-Agent": "Mozilla/5.0",
       Accept: "application/json",
-      Referer: "https://www.nba.com/",
     },
   });
 
   if (!response.ok) {
     console.error("Status HTTP:", response.status);
-    throw new Error("Erro ao acessar API da NBA");
+    throw new Error("Erro ao acessar API da ESPN");
   }
 
   const json = await response.json();
 
-  const times = json.league.standard.teams;
+  const entries =
+    json.children?.[0]?.standings?.entries ||
+    json.children?.[1]?.standings?.entries;
 
-  if (!times || times.length === 0) {
-    throw new Error("Nenhum dado retornado pela API da NBA");
+  if (!entries || entries.length === 0) {
+    throw new Error("Nenhum dado retornado pela ESPN");
   }
 
-  const dados = times.map((t) => ({
-    time: t.teamName,
-    vitorias: t.wins,
-    derrotas: t.losses,
-  }));
+  const dados = entries.map((e) => {
+    const stats = Object.fromEntries(
+      e.stats.map((s) => [s.name, s.value])
+    );
+
+    return {
+      time: e.team.displayName,
+      vitorias: stats.wins,
+      derrotas: stats.losses,
+    };
+  });
 
   console.log(`📊 ${dados.length} times encontrados`);
 
@@ -71,11 +77,11 @@ async function atualizarNBA() {
 
   if (insError) throw insError;
 
-  console.log("🏀 Classificação NBA atualizada com sucesso");
+  console.log("🏀 Classificação NBA atualizada com sucesso (ESPN)");
 }
 
 atualizarNBA().catch((err) => {
   console.error("❌ Erro:", err.message);
   process.exit(1);
 });
-    
+      
