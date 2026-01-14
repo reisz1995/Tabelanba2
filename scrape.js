@@ -56,8 +56,8 @@ async function atualizarNBA() {
 
     return {
       time: e.team.displayName,
-      vitorias: stats.wins,
-      derrotas: stats.losses,
+      v: stats.wins,
+      d: stats.losses,
       pts: stats.pts_pro,
     };
   });
