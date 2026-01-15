@@ -50,28 +50,37 @@ async function atualizarNBA() {
   }
 
   const dados = entries.map((e) => {
-    const stats = Object.fromEntries(
-      e.stats.map((s) => [s.name, s.value])
-    );
+  const stats = Object.fromEntries(
+    e.stats.map((s) => [s.name, s.displayValue || s.value])
+  );
 
-    return {
-      time: e.team.displayName,
-      v: stats.wins,
-      d: stats.losses,
-      pct_vit: stats.winPercent,
-      ja: stats.gamesPlayed,
-      casa: stats.Home,
-      visitante: stats.Road,
-      div: stats.vsDiv,
-      conf: stats.vsConf,
-      pts: stats.pointsFor,
-      pts_contra: stats.pointsAgainst,
-      dif: stats.pointDifferential,
-      strk: stats.streak,
-      u10: stats.Last10,
-      
-    };
-  });
+  return {
+    time: e.team.displayName,
+
+    v: parseInt(stats.wins) || 0,
+    d: parseInt(stats.losses) || 0,
+
+    pct_vit: parseFloat(stats.winPercent) || 0,
+
+    ja: stats.gamesPlayed?.toString() || "-",
+
+    casa: stats.Home?.toString() || "-",
+    visitante: stats.Road?.toString() || "-",
+
+    div: stats.vsDiv?.toString() || "-",
+    conf: stats.vsConf?.toString() || "-",
+
+    pts: parseFloat(stats.pointsFor) || 0,
+    pts_contra: parseFloat(stats.pointsAgainst) || 0,
+
+    dif: stats.pointDifferential?.toString() || "-",
+
+    strk: stats.streak?.toString() || "-",
+
+    u10: stats.Last10?.toString() || "-"
+  };
+});
+  
 
   console.log(`📊 ${dados.length} times encontrados`);
 
