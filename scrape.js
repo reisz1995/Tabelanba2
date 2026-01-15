@@ -54,37 +54,25 @@ async function atualizarNBA() {
     e.stats.map((s) => [s.name, s.displayValue || s.value])
   );
 
-  return {
-    time: e.team.displayName,
+return {
+  time: e.team.displayName,
+  v: stats.wins,
+  d: stats.losses,
+  pct_vit: stats.winPercent,
+  ja: stats.gamesPlayed,
+  casa: stats.Home,
+  visitante: stats.Road,
+  div: stats.vsDiv,
+  conf: stats.vsConf,
 
-    v: parseInt(stats.wins) || 0,
-    d: parseInt(stats.losses) || 0,
+  pts: stats.pointsForPerGame || stats.avgPointsFor || stats.pointsFor,
+  pts_contra: stats.pointsAgainstPerGame || stats.avgPointsAgainst || stats.pointsAgainst,
 
-    pct_vit: parseFloat(stats.winPercent) || 0,
-
-    ja: stats.gamesPlayed?.toString() || "-",
-
-    casa: stats.Home?.toString() || "-",
-    visitante: stats.Road?.toString() || "-",
-
-    div: stats.vsDiv?.toString() || "-",
-    conf: stats.vsConf?.toString() || "-",
-
-    pts: stats.gamesPlayed
-  ? (parseFloat(stats.pointsFor) / parseInt(stats.gamesPlayed)).toFixed(1)
-  : 0,
-
-    pts_contra: stats.gamesPlayed
-  ? (parseFloat(stats.pointsAgainst) / parseInt(stats.gamesPlayed)).toFixed(1)
-  : 0,
-    
-
-    dif: stats.pointDifferential?.toString() || "-",
-
-    strk: stats.streak?.toString() || "-",
-
-    u10: stats.Last10?.toString() || "-"
-  };
+  dif: stats.pointDifferential,
+  strk: stats.streak,
+  u10: stats.Last10,
+};
+      
 });
   
 
