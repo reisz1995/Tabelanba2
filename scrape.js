@@ -70,8 +70,14 @@ async function atualizarNBA() {
     div: stats.vsDiv?.toString() || "-",
     conf: stats.vsConf?.toString() || "-",
 
-    pts: parseFloat(stats.pointsFor) || 0,
-    pts_contra: parseFloat(stats.pointsAgainst) || 0,
+    pts: stats.gamesPlayed
+  ? (parseFloat(stats.pointsFor) / parseInt(stats.gamesPlayed)).toFixed(1)
+  : 0,
+
+    pts_contra: stats.gamesPlayed
+  ? (parseFloat(stats.pointsAgainst) / parseInt(stats.gamesPlayed)).toFixed(1)
+  : 0,
+    
 
     dif: stats.pointDifferential?.toString() || "-",
 
