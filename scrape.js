@@ -70,7 +70,7 @@ return {
 
   dif: stats.pointDifferential,
   strk: stats.streak,
-  u10: stats.Last Ten Games,
+  u10: stats.L10,
 };
       
 });
