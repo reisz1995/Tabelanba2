@@ -51,30 +51,33 @@ async function atualizarNBA() {
   }
 
   const dados = entries.map((e) => {
-  const stats = Object.fromEntries(
-    e.stats.map((s) => [s.name, s.displayValue || s.value])
-  );
+    // Cria um objeto de estatísticas mais robusto, mapeando por nome, abreviação e tipo
+    const stats = {};
+    e.stats.forEach((s) => {
+      if (s.name) stats[s.name] = s.displayValue || s.value;
+      if (s.abbreviation) stats[s.abbreviation] = s.displayValue || s.value;
+      if (s.type) stats[s.type] = s.displayValue || s.value;
+    });
 
-return {
-  time: e.team.displayName,
-  v: stats.wins,
-  d: stats.losses,
-  pct_vit: stats.winPercent,
-  ja: stats.gamesplayed,
-  casa: stats.Home,
-  visitante: stats.Road,
-  div: stats.vsdiv,
-  conf: stats.vsconf,
+    return {
+      time: e.team.displayName,
+      v: stats.wins,
+      d: stats.losses,
+      pct_vit: stats.winPercent,
+      ja: stats.gamesplayed || stats.GP || (Number(stats.wins) + Number(stats.losses)).toString(),
+      casa: stats.Home || stats.home,
+      visitante: stats.Road || stats.road,
+      div: stats.vsdiv || stats["vs. Div."] || stats.DIV,
+      conf: stats.vsconf || stats["vs. Conf."] || stats.CONF,
 
-  pts: stats.pointsForPerGame || stats.avgPointsFor || stats.pointsFor,
-  pts_contra: stats.pointsAgainstPerGame || stats.avgPointsAgainst || stats.pointsAgainst,
+      pts: stats.pointsForPerGame || stats.avgPointsFor || stats.pointsFor,
+      pts_contra: stats.pointsAgainstPerGame || stats.avgPointsAgainst || stats.pointsAgainst,
 
-  dif: stats.pointDifferential,
-  strk: stats.streak,
-  u10: stats.L10,
-};
-      
-});
+      dif: stats.pointDifferential,
+      strk: stats.streak,
+      u10: stats.L10 || stats.lasttengames || stats["Last Ten Games"],
+    };
+  });
   
 
   console.log(`📊 ${dados.length} times encontrados`);
