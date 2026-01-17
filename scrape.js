@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { createClient } from "@supabase/supabase-js";
 
 /**
@@ -78,20 +79,16 @@ return {
 
   console.log(`📊 ${dados.length} times encontrados`);
 
-  // Limpa tabela
-  const { error: delError } = await supabase
+  // Atualiza os dados usando upsert (mais seguro que delete + insert)
+  // Nota: Para funcionar corretamente, a coluna 'time' deve ter uma restrição de unicidade no Supabase.
+  const { error: upsertError } = await supabase
     .from("classificacao_nba")
-    .delete()
-    .neq("id", 0);
+    .upsert(dados, { onConflict: 'time' });
 
-  if (delError) throw delError;
-
-  // Insere novos dados
-  const { error: insError } = await supabase
-    .from("classificacao_nba")
-    .insert(dados);
-
-  if (insError) throw insError;
+  if (upsertError) {
+    console.error("❌ Erro ao atualizar dados (Upsert):", upsertError.message);
+    throw upsertError;
+  }
 
   console.log("🏀 Classificação NBA atualizada com sucesso (ESPN)");
 }
