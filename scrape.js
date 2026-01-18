@@ -82,15 +82,27 @@ async function atualizarNBA() {
 
   console.log(`📊 ${dados.length} times encontrados`);
 
-  // Atualiza os dados usando upsert (mais seguro que delete + insert)
-  // Nota: Para funcionar corretamente, a coluna 'time' deve ter uma restrição de unicidade no Supabase.
-  const { error: upsertError } = await supabase
+  // Como a tabela pode não ter uma restrição de unicidade na coluna 'time',
+  // usamos a estratégia de deletar e inserir para evitar duplicatas.
+  console.log("🧹 Limpando dados antigos...");
+  const { error: deleteError } = await supabase
     .from("classificacao_nba")
-    .upsert(dados, { onConflict: 'time' });
+    .delete()
+    .neq("time", "");
 
-  if (upsertError) {
-    console.error("❌ Erro ao atualizar dados (Upsert):", upsertError.message);
-    throw upsertError;
+  if (deleteError) {
+    console.error("❌ Erro ao limpar dados antigos:", deleteError.message);
+    // Tentamos prosseguir mesmo se o delete falhar
+  }
+
+  console.log("📥 Inserindo novos dados...");
+  const { error: insertError } = await supabase
+    .from("classificacao_nba")
+    .insert(dados);
+
+  if (insertError) {
+    console.error("❌ Erro ao inserir novos dados:", insertError.message);
+    throw insertError;
   }
 
   console.log("🏀 Classificação NBA atualizada com sucesso (ESPN)");
