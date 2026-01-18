@@ -15,7 +15,7 @@ jobs:
         with:
           node-version: 20
 
-      - run: npm install node-fetch @supabase/supabase-js
+      - run: npm install
       - run: node importPlayers.js
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
