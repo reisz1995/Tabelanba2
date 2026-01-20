@@ -9,4 +9,11 @@
     "@supabase/supabase-js": "^2.90.1",
     "dotenv": "^17.2.3"
   }
+  {
+  "type": "module",
+  "scripts": {
+    "opencode": "node src/opencode.js"
+  }
+}
+
 }
