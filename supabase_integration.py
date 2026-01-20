@@ -74,7 +74,14 @@ def main():
 
     except Exception as e:
         print(f"❌ Erro fatal durante a inserção no Supabase: {e}")
-        print("\nDica: Verifique se a tabela 'nba_injured_players' foi criada corretamente no seu banco de dados Supabase.")
+        if "row-level security" in str(e).lower():
+            print("\n💡 Dica de RLS (Row-Level Security):")
+            print("   O erro indica que o script não tem permissão para inserir dados.")
+            print("   Para resolver, certifique-se de:")
+            print("   1. Usar a 'service_role key' (Secret Key) do Supabase, não a 'anon key'.")
+            print("   2. Ou executar o SQL das políticas de segurança (Policies) no SQL Editor do Supabase.")
+        else:
+            print("\nDica: Verifique se a tabela 'nba_injured_players' foi criada corretamente no seu banco de dados Supabase.")
 
 if __name__ == "__main__":
     main()
