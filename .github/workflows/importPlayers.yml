@@ -1,28 +1,16 @@
-name: Importar Estatísticas NBA
+name: OpenCode Sync
 
 on:
-  schedule:
-    - cron: "0 7 * * *"
-  workflow_dispatch:
+  push:
+    branches: [ "main" ]
 
 jobs:
-  import:
+  opencode:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout do repositório
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Configurar Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Instalar dependências
-        run: npm install
-      - name: Executar importação
-        run: node importPlayers.js
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      - name: Run OpenCode
+        run: |
+          npm install
+          npm run opencode
