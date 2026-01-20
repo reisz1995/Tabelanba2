@@ -198,8 +198,8 @@ def main():
                 print(f"    ↳ {details}")
     
     # Salva os dados
-    api.save_to_json(injuries, "/mnt/user-data/outputs/nba_injuries.json")
-    api.save_supabase_schema("/mnt/user-data/outputs/supabase_schema.sql")
+    api.save_to_json(injuries, "nba_injuries.json")
+    api.save_supabase_schema("supabase_schema.sql")
     
     print("\n✅ Processo concluído!")
     print("\n📝 PRÓXIMOS PASSOS:")
