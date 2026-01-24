@@ -13,7 +13,7 @@ app = Flask(__name__)
 CORS(app)  # Permite requisições de qualquer origem
 
 # Arquivo de dados
-DATA_FILE = "/mnt/user-data/outputs/nba_injuries.json"
+DATA_FILE = "nba_injuries.json"
 
 
 def load_injuries() -> List[Dict[str, Any]]:

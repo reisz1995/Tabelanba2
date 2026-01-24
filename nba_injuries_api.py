@@ -158,6 +158,21 @@ COMMENT ON TABLE nba_injured_players IS 'Jogadores da NBA atualmente lesionados 
 COMMENT ON COLUMN nba_injured_players.player_id IS 'ID do jogador na ESPN';
 COMMENT ON COLUMN nba_injured_players.injury_status IS 'Status da lesão (Out, Day-To-Day, Questionable, etc)';
 COMMENT ON COLUMN nba_injured_players.last_updated IS 'Data da última atualização dos dados';
+
+-- Políticas de Segurança (RLS)
+ALTER TABLE nba_injured_players ENABLE ROW LEVEL SECURITY;
+
+-- Permitir leitura pública
+CREATE POLICY "Permitir leitura pública de lesões"
+ON nba_injured_players FOR SELECT
+USING (true);
+
+-- Permitir tudo para a role service_role (usada por scripts backend)
+CREATE POLICY "Permitir tudo para service_role"
+ON nba_injured_players FOR ALL
+TO service_role
+USING (true)
+WITH CHECK (true);
 """
     
     def save_supabase_schema(self, filename: str = "supabase_schema.sql"):
@@ -198,8 +213,8 @@ def main():
                 print(f"    ↳ {details}")
     
     # Salva os dados
-    api.save_to_json(injuries, "/mnt/user-data/outputs/nba_injuries.json")
-    api.save_supabase_schema("/mnt/user-data/outputs/supabase_schema.sql")
+    api.save_to_json(injuries, "nba_injuries.json")
+    api.save_supabase_schema("supabase_schema.sql")
     
     print("\n✅ Processo concluído!")
     print("\n📝 PRÓXIMOS PASSOS:")
