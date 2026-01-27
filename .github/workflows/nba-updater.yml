@@ -2,8 +2,8 @@ name: Update NBA Stats
 
 on:
   schedule:
-    - cron: '0 * * * *' # Roda a cada 1 hora
-  workflow_dispatch: # Permite rodar manualmente clicando num botão
+    - cron: '0 * * * *' # Roda de hora em hora
+  workflow_dispatch: # Botão manual
 
 jobs:
   update-stats:
@@ -14,7 +14,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: '18'
+          node-version: '20' # <--- MUDAMOS DE 18 PARA 20 AQUI
           
       - name: Install dependencies
         run: npm install @supabase/supabase-js
@@ -23,4 +23,5 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        # Adicione a flag --experimental-modules para garantir compatibilidade
         run: node scripts/update-nba-stats.js
