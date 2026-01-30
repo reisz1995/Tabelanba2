@@ -36,13 +36,13 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: node importPlayers.js
       
-      # --- PARTE 2: Python (Lesões e Integração) ---
+      # --- PARTE 2: Python (Lesões, Integração e IA) ---
       - name: 🐍 Configurar Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           
-      - name: 📦 Instalar dependências Python
+      - name: 📦 Instalar dependências Python Básicas
         run: |
           pip install requests supabase
 
@@ -50,14 +50,16 @@ jobs:
         run: python nba_injuries_api.py
 
       - name: 🔄 Enviar Lesões para o Supabase
-     
-      # ... (depois do passo de lesões)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python supabase_integration.py
 
       - name: 🔮 Gerar Previsões com IA (Groq)
-            env:
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      run: |
-      pip install groq nba_api
-      python predict_games.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          pip install groq nba_api
+          python predict_games.py
