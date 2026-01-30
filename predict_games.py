@@ -17,7 +17,6 @@ if not all([SUPABASE_URL, SUPABASE_KEY, GROQ_API_KEY]):
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
-# --- CORREÇÃO 1: Novo ID do modelo ---
 MODEL_ID = "llama-3.3-70b-versatile" 
 
 def get_team_stats(team_name):
@@ -38,17 +37,21 @@ def analyze_game(game):
     home_stats = get_team_stats(home_team)
     away_stats = get_team_stats(away_team)
 
+    # Prompt Otimizado com as novas diretrizes
     prompt = f"""
-    Você é um especialista em apostas da NBA. Analise: {home_team} (Casa) vs {away_team} (Fora).
+    Aja como um analista 'Sharp' da NBA. Analise: {home_team} (Casa) vs {away_team} (Fora).
     
     Dados {home_team}: {game['homeTeam']['wins']}-{game['homeTeam']['losses']}, Streak: {home_stats.get('strk', 'N/A') if home_stats else 'N/A'}.
     Dados {away_team}: {game['awayTeam']['wins']}-{game['awayTeam']['losses']}, Streak: {away_stats.get('strk', 'N/A') if away_stats else 'N/A'}.
 
-    Responda em JSON puro neste formato:
+    Gere um JSON estrito com estas chaves:
     {{
-        "analise": "Texto curto explicativo",
-        "palpite": "Ex: Lakers -5.5",
-        "confianca": "Alta/Média/Baixa"
+        "palpite_principal": "Ex: Lakers -5.5 ou Celtics ML",
+        "confianca": "Alta/Média/Baixa",
+        "fator_decisivo": "Uma frase curta explicando o motivo chave (ex: Lesão do Embiid, Matchup no garrafão)",
+        "analise_curta": "Resumo de 2 linhas do jogo",
+        "linha_seguranca_over": "Uma linha alternativa segura para Over (ex: Over 210.5)",
+        "linha_seguranca_under": "Uma linha alternativa segura para Under (ex: Under 240.5)"
     }}
     """
 
@@ -57,13 +60,12 @@ def analyze_game(game):
             messages=[{"role": "user", "content": prompt}],
             model=MODEL_ID,
             temperature=0.3,
-            response_format={"type": "json_object"} # Força resposta JSON limpa
+            response_format={"type": "json_object"}
         )
         return json.loads(chat_completion.choices[0].message.content)
     except Exception as e:
         print(f"⚠️ Erro na Groq ({home_team} vs {away_team}): {e}")
-        # Retorna um fallback para não quebrar o loop
-        return {"analise": "Análise indisponível.", "palpite": "N/A", "confianca": "N/A"}
+        return None
 
 def main():
     print("🏀 Buscando jogos de hoje...")
@@ -88,17 +90,17 @@ def main():
 
         ai_result = analyze_game(game)
 
-        # --- CORREÇÃO 2: Nome da coluna alinhado com o SQL ('prediction') ---
-        # Salvamos o JSON completo como string na coluna 'prediction'
-        prediction_content = f"Palpite: {ai_result.get('palpite')} | Confiança: {ai_result.get('confianca')} | Análise: {ai_result.get('analise')}"
+        if ai_result:
+            # Salvamos o JSON inteiro como string para o frontend processar
+            prediction_json_str = json.dumps(ai_result)
 
-        predictions.append({
-            "id": game_id,
-            "date": today_str,
-            "home_team": home,
-            "away_team": away,
-            "prediction": prediction_content # Mudado de 'prediction_text' para 'prediction'
-        })
+            predictions.append({
+                "id": game_id,
+                "date": today_str,
+                "home_team": home,
+                "away_team": away,
+                "prediction": prediction_json_str 
+            })
 
     if predictions:
         print(f"💾 Salvando {len(predictions)} previsões...")
