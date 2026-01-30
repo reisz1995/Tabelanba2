@@ -1,0 +1,4 @@
+requests
+supabase
+nba_api
+groq
