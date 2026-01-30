@@ -61,5 +61,6 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: |
-          pip install groq nba_api
+          pip install groq nba_api pytz  # <--- ADICIONE "pytz" AQUI
           python predict_games.py
+
