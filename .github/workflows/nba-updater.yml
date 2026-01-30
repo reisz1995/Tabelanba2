@@ -2,7 +2,7 @@ name: Update NBA Stats
 
 on:
   schedule:
-    - cron: '0 * * * *' # Roda de hora em hora
+    - cron: '0 */6 * * *'  # A cada 6 horas
   workflow_dispatch: # Botão manual
 
 jobs:
