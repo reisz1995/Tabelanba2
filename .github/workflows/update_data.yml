@@ -61,7 +61,3 @@ jobs:
       run: |
       pip install groq nba_api
       python predict_games.py
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: python supabase_integration.py
