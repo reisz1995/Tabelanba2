@@ -2,19 +2,19 @@ name: Atualização Diária da NBA
 
 on:
   schedule:
-    # Roda a cada 6 horas (00:00, 06:00, 12:00, 18:00 UTC)
+    # Roda a cada 6 horas
     - cron: '0 */6 * * *'
-  workflow_dispatch: # Permite rodar manualmente clicando num botão (útil para testes)
+  workflow_dispatch:
 
 jobs:
   update-nba-data:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 📥 Baixar código do repositório
+      - name: 📥 Baixar código
         uses: actions/checkout@v4
 
-      # --- PARTE 1: Node.js (Classificação e Stats dos Jogadores) ---
+      # --- NODE.JS (Scrapers existentes) ---
       - name: 🟢 Configurar Node.js
         uses: actions/setup-node@v4
         with:
@@ -24,43 +24,41 @@ jobs:
       - name: 📦 Instalar dependências Node
         run: npm ci
 
-      - name: 🏀 Atualizar Classificação (ESPN)
+      - name: 🏀 Atualizar Classificação
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: node scrape.js
 
-      - name: 🏃 Atualizar Stats dos Jogadores
+      - name: 🏃 Atualizar Stats Jogadores
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: node importPlayers.js
       
-      # --- PARTE 2: Python (Lesões, Integração e IA) ---
+      # --- PYTHON (Lesões e IA) ---
       - name: 🐍 Configurar Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           
-      - name: 📦 Instalar dependências Python Básicas
+      - name: 📦 Instalar dependências Python
+        # REMOVIDO: nba_api. ADICIONADO: pytz, requests
         run: |
-          pip install requests supabase
+          pip install requests supabase groq pytz
 
-      - name: 🏥 Buscar Lesões (Gera JSON)
+      - name: 🏥 Buscar Lesões
         run: python nba_injuries_api.py
 
-      - name: 🔄 Enviar Lesões para o Supabase
+      - name: 🔄 Enviar Lesões
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python supabase_integration.py
 
-      - name: 🔮 Gerar Previsões com IA (Groq)
+      - name: 🔮 Gerar Previsões (ESPN + Groq)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-        run: |
-          pip install groq nba_api pytz  # <--- ADICIONE "pytz" AQUI
-          python predict_games.py
-
+        run: python predict_games.py
