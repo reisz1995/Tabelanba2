@@ -1,6 +1,7 @@
 import os
 import json
 from datetime import datetime
+import pytz # Biblioteca de fuso horário
 from supabase import create_client
 from groq import Groq
 from nba_api.live.nba.endpoints import scoreboard
@@ -18,6 +19,13 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 MODEL_ID = "llama-3.3-70b-versatile" 
+
+def get_nba_date():
+    """Retorna a data atual no horário de Nova York (NBA Time)"""
+    utc_now = datetime.now(pytz.utc)
+    # Converte UTC para US/Eastern (Horário da NBA)
+    et_now = utc_now.astimezone(pytz.timezone('US/Eastern'))
+    return et_now.strftime('%Y-%m-%d')
 
 def get_team_stats(team_name):
     try:
@@ -37,7 +45,6 @@ def analyze_game(game):
     home_stats = get_team_stats(home_team)
     away_stats = get_team_stats(away_team)
 
-    # Prompt Otimizado com as novas diretrizes
     prompt = f"""
     Aja como um analista 'Sharp' da NBA. Analise: {home_team} (Casa) vs {away_team} (Fora).
     
@@ -48,10 +55,10 @@ def analyze_game(game):
     {{
         "palpite_principal": "Ex: Lakers -5.5 ou Celtics ML",
         "confianca": "Alta/Média/Baixa",
-        "fator_decisivo": "Uma frase curta explicando o motivo chave (ex: Lesão do Embiid, Matchup no garrafão)",
+        "fator_decisivo": "Uma frase curta explicando o motivo chave",
         "analise_curta": "Resumo de 2 linhas do jogo",
-        "linha_seguranca_over": "Uma linha alternativa segura para Over (ex: Over 210.5)",
-        "linha_seguranca_under": "Uma linha alternativa segura para Under (ex: Under 240.5)"
+        "linha_seguranca_over": "Ex: Over 210.5",
+        "linha_seguranca_under": "Ex: Under 240.5"
     }}
     """
 
@@ -68,8 +75,13 @@ def analyze_game(game):
         return None
 
 def main():
-    print("🏀 Buscando jogos de hoje...")
+    # Pega a data correta da NBA (NY Time)
+    nba_date = get_nba_date()
+    print(f"📅 Data NBA (US/Eastern): {nba_date}")
+    
+    print("🏀 Buscando jogos...")
     try:
+        # Scoreboard da Live API geralmente traz os jogos do dia corrente
         board = scoreboard.ScoreBoard()
         games = board.games.get_dict()
     except Exception as e:
@@ -77,38 +89,40 @@ def main():
         return
 
     if not games:
-        print("💤 Nenhum jogo hoje.")
+        print("💤 Nenhum jogo encontrado na API Live.")
         return
 
     predictions = []
-    today_str = datetime.now().strftime('%Y-%m-%d')
 
     for game in games:
         home = game['homeTeam']['teamName']
         away = game['awayTeam']['teamName']
-        game_id = f"{today_str}_{home}_{away}".replace(" ", "")
+        
+        # Cria um ID único baseado na DATA CORRETA + Times
+        game_id = f"{nba_date}_{home}_{away}".replace(" ", "")
 
         ai_result = analyze_game(game)
 
         if ai_result:
-            # Salvamos o JSON inteiro como string para o frontend processar
             prediction_json_str = json.dumps(ai_result)
 
             predictions.append({
                 "id": game_id,
-                "date": today_str,
+                "date": nba_date, # Salva com a data corrigida
                 "home_team": home,
                 "away_team": away,
                 "prediction": prediction_json_str 
             })
 
     if predictions:
-        print(f"💾 Salvando {len(predictions)} previsões...")
+        print(f"💾 Salvando {len(predictions)} previsões para o dia {nba_date}...")
         try:
             data = supabase.table("game_predictions").upsert(predictions).execute()
             print("✅ Sucesso total!")
         except Exception as e:
             print(f"❌ Erro ao salvar no Supabase: {e}")
+    else:
+        print("⚠️ Nenhuma previsão gerada.")
 
 if __name__ == "__main__":
     main()
