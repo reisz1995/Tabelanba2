@@ -1,0 +1,67 @@
+name: Atualização Diária da NBA
+
+on:
+  schedule:
+    # Roda a cada 6 horas (00:00, 06:00, 12:00, 18:00 UTC)
+    - cron: '0 */6 * * *'
+  workflow_dispatch: # Permite rodar manualmente clicando num botão (útil para testes)
+
+jobs:
+  update-nba-data:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Baixar código do repositório
+        uses: actions/checkout@v4
+
+      # --- PARTE 1: Node.js (Classificação e Stats dos Jogadores) ---
+      - name: 🟢 Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: 📦 Instalar dependências Node
+        run: npm ci
+
+      - name: 🏀 Atualizar Classificação (ESPN)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node scrape.js
+
+      - name: 🏃 Atualizar Stats dos Jogadores
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node importPlayers.js
+      
+      # --- PARTE 2: Python (Lesões e Integração) ---
+      - name: 🐍 Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          
+      - name: 📦 Instalar dependências Python
+        run: |
+          pip install requests supabase
+
+      - name: 🏥 Buscar Lesões (Gera JSON)
+        run: python nba_injuries_api.py
+
+      - name: 🔄 Enviar Lesões para o Supabase
+     
+      # ... (depois do passo de lesões)
+
+      - name: 🔮 Gerar Previsões com IA (Groq)
+            env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      run: |
+      pip install groq nba_api
+      python predict_games.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python supabase_integration.py
