@@ -39,9 +39,7 @@ def get_espn_games(date_obj):
             competition = event['competitions'][0]
             status = event.get('status', {}).get('type', {}).get('state', 'pre')
 
-            # FILTRO CRUCIAL: Ignora jogos finalizados ('post')
             if status == 'post':
-                print(f"⏩ Pulando jogo finalizado: {event.get('name')}")
                 continue
 
             competitors = competition['competitors']
@@ -62,9 +60,6 @@ def get_espn_games(date_obj):
     except Exception as e:
         print(f"❌ Erro na ESPN: {e}")
         return []
-
-# ... (Mantenha as funções get_team_stats e analyze_game IGUAIS ao anterior) ...
-# Vou repetir apenas a analyze_game para garantir que você tenha o código completo
 
 def get_team_stats(team_name):
     try:
@@ -122,24 +117,33 @@ def main():
     for game in games:
         home = game['home']['name']
         away = game['away']['name']
-        # Usando nomes completos para evitar conflito
         game_id = f"{date_iso}_{home}_{away}".replace(" ", "")
 
         ai_result = analyze_game(game)
         if ai_result:
+            # 1. Correção dos acentos (ensure_ascii=False)
+            prediction_json_str = json.dumps(ai_result, ensure_ascii=False)
+
             predictions.append({
                 "id": game_id,
                 "date": date_iso,
                 "home_team": home,
                 "away_team": away,
-                "prediction": json.dumps(ai_result)
+                "prediction": prediction_json_str,
+                # 2. Preenchendo as novas colunas separadas
+                "main_pick": ai_result.get("palpite_principal"),
+                "confidence": ai_result.get("confianca"),
+                "over_line": ai_result.get("linha_seguranca_over"),
+                "under_line": ai_result.get("linha_seguranca_under")
             })
         time.sleep(1)
 
     if predictions:
         print(f"💾 Salvando {len(predictions)} previsões...")
+        # Upsert vai atualizar as linhas existentes com as novas colunas
         supabase.table("game_predictions").upsert(predictions).execute()
         print("✅ Sucesso!")
 
 if __name__ == "__main__":
     main()
+
