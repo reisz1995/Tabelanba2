@@ -63,11 +63,25 @@ def get_espn_games(date_obj):
 
 def get_team_stats(team_name):
     try:
+        # Tentativa 1: Busca pelo último nome (ex: "Lakers")
         search_term = team_name.split(' ')[-1]
         res = supabase.table("classificacao_nba").select("*").ilike("time", f"%{search_term}%").execute()
-        if res.data: return res.data[0]
-    except: pass
+        
+        if res.data: 
+            return res.data[0]
+        
+        # Tentativa 2: Busca pelo primeiro nome (ex: "Portland" para Trail Blazers)
+        search_term_first = team_name.split(' ')[0]
+        res_retry = supabase.table("classificacao_nba").select("*").ilike("time", f"%{search_term_first}%").execute()
+        
+        if res_retry.data:
+            return res_retry.data[0]
+            
+    except Exception as e:
+        print(f"⚠️ Erro ao buscar stats para {team_name}: {e}")
+    
     return None
+
 
 def analyze_game(game_data):
     home = game_data['home']
