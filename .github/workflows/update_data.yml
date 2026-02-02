@@ -2,8 +2,8 @@ name: Atualização Diária da NBA
 
 on:
   schedule:
-    # Roda a cada 6 horas
-    - cron: '0 */6 * * *'
+    # Roda a cada 10 horas
+    - cron: '0 */10 * * *'
   workflow_dispatch:
 
 jobs:
