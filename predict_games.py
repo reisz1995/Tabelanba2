@@ -91,17 +91,37 @@ def analyze_game(game_data):
     home_stats = get_team_stats(home['name'])
     away_stats = get_team_stats(away['name'])
 
+    # --- INSTRUÇÕES ESTRATÉGICAS ADICIONADAS AQUI ---
     prompt = f"""
-    Aja como um analista 'Sharp' da NBA. Jogo: {home['name']} (Casa) vs {away['name']} (Fora).
-    Stats {home['name']}: Recorde {home['record']}, Streak: {home_stats.get('strk', 'N/A') if home_stats else 'N/A'}.
-    Stats {away['name']}: Recorde {away['record']}, Streak: {away_stats.get('strk', 'N/A') if away_stats else 'N/A'}.
+    Aja como um analista 'Sharp' profissional de NBA. 
+    Jogo: {home['name']} (Casa) vs {away['name']} (Fora).
 
-    Responda APENAS um JSON válido:
+    DADOS DOS TIMES:
+    - {home['name']}: Recorde {home['record']}, Streak Atual: {home_stats.get('strk', 'N/A') if home_stats else 'N/A'}.
+    - {away['name']}: Recorde {away['record']}, Streak Atual: {away_stats.get('strk', 'N/A') if away_stats else 'N/A'}.
+
+    SIGA RIGOROSAMENTE AS SEGUINTES REGRAS DE ANÁLISE (SETUP):
+    1. DEFESA E PONTUAÇÃO:
+       - Defesa Ruim = Tendência forte de OVER.
+       - Para apostar em OVER, pergunte-se: "Os dois times têm estrelas para fazer +110 pontos cada?" Se não, cuidado.
+    
+    2. FATOR ESTRELA E CANSAÇO:
+       - Se o melhor jogador do time não joga (considere conhecimento geral sobre lesões recentes), o jogo fica complicado/imprevisível.
+       - Cansaço pode quebrar o favorito (atenção a Back-to-backs).
+       - Cuidado com time que vem de derrota (podem vir mordidos para ganhar ou estar em crise).
+
+    3. HANDICAPS (Obrigatório):
+       - Times de forças iguais (jogo parelho) = PREFIRA Handicap Positivo (+).
+       - Jogo difícil ou intermediário = SEMPRE Handicap Positivo (+).
+       - REGRA DE OURO: Handicap +5.5 NÃO PRESTA (evite essa linha exata).
+       - PREFERÊNCIA: Busque linhas próximas a +10 (underdog claro) ou -5 (favorito sólido).
+
+    Responda APENAS um JSON válido com o seguinte formato:
     {{
-        "palpite_principal": "Ex: Lakers -5.5",
+        "palpite_principal": "Ex: Lakers -5.0 ou Heat +4.0",
         "confianca": "Alta/Média/Baixa",
-        "fator_decisivo": "Frase curta",
-        "analise_curta": "Resumo de 2 linhas",
+        "fator_decisivo": "Explique usando as regras acima (ex: defesa ruim, cansaço, etc)",
+        "analise_curta": "Resumo de 2 linhas focado no matchup",
         "linha_seguranca_over": "Ex: Over 210.5",
         "linha_seguranca_under": "Ex: Under 240.5"
     }}
@@ -160,4 +180,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
