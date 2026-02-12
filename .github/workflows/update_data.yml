@@ -2,7 +2,6 @@ name: Atualização Diária da NBA
 
 on:
   schedule:
-    # Roda a cada 10 horas
     - cron: '0 */11 * * *'
   workflow_dispatch:
 
@@ -14,7 +13,7 @@ jobs:
       - name: 📥 Baixar código
         uses: actions/checkout@v4
 
-      # --- NODE.JS (Scrapers existentes) ---
+      # --- NODE.JS ---
       - name: 🟢 Configurar Node.js
         uses: actions/setup-node@v4
         with:
@@ -24,43 +23,33 @@ jobs:
       - name: 📦 Instalar dependências Node
         run: npm ci
 
-      - name: 🏀 Atualizar Classificação
+      - name: 🏀 Atualizar Classificação e Jogadores
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: node scrape.js
-
-      - name: 🏃 Atualizar Stats Jogadores
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: node importPlayers.js
+        run: |
+          node scrape.js
+          node importPlayers.js
       
-      # --- PYTHON (Lesões e IA) ---
+      # --- PYTHON ---
       - name: 🐍 Configurar Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+          cache: 'pip' # Cache automático do pip
           
       - name: 📦 Instalar dependências Python
-        # REMOVIDO: nba_api. ADICIONADO: pytz, requests
-        run: |
-          pip install requests supabase groq pytz
+        run: pip install requests supabase groq pytz
 
-      - name: 🏥 Buscar Lesões
-        env:  # ADICIONADO: As variáveis são obrigatórias aqui também
+      # 1. Busca lesões e salva o JSON localmente (e no banco se o script fizer isso)
+      - name: 🏥 Buscar Lesões (Gera nba_injuries.json)
+        env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python nba_injuries_api.py
 
-
-      - name: 🔄 Enviar Lesões
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: python supabase_integration.py
-
-      - name: 🔮 Gerar Previsões (ESPN + Groq)
+      # 2. Gera previsões LENDO o JSON do passo anterior
+      - name: 🔮 Gerar Previsões (IA com Lesões)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
