@@ -1,20 +1,12 @@
-      # --- NODE.JS (EXTRAÇÃO DE MATRIZ DE DADOS E MERCADO) ---
-      - name: 🟢 Configurar Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-          cache: 'npm'
-
-      - name: 📦 Instalar dependências Node
-        run: npm ci
-
       - name: 🏀 Sincronizar Core de Dados (Classificação, Jogadores e Mercado)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-          # Mapeamento dinâmico para garantir que o script de Odds acesse as chaves via process.env
+          # Mapeamento estrito para garantir que o cliente Supabase no arquivo TS inicialize
           VITE_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
           node scrape.js
           node importPlayers.js
-          npx tsx scrape-nba-odds.ts 
+          npx --yes tsx scrape-nba-odds.ts
+          
