@@ -1,29 +1,28 @@
 import os
 import json
 import time
+import random
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 from supabase import create_client
 from groq import Groq
 
-# --- CONFIGURAÇÃO ---
+# --- CONFIGURAÇÃO DE AMBIENTE ---
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-
-# Tenta carregar o arquivo gerado pelo script de lesões
 INJURIES_FILE = "nba_injuries.json" 
 
 if not all([SUPABASE_URL, SUPABASE_KEY, GROQ_API_KEY]):
-    print("❌ Erro: Faltam variáveis de ambiente.")
+    print("❌ COLAPSO_DE_SISTEMA: Faltam variáveis de ambiente críticas.")
     exit(1)
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 groq_client = Groq(api_key=GROQ_API_KEY)
 MODEL_ID = "llama-3.3-70b-versatile"
 
-# --- CLASSE DE GESTÃO DE LESÕES ---
+# --- CLASSE DE GESTÃO DE LESÕES (MANTIDA DO SETUP ORIGINAL) ---
 class InjuryMonitor:
     def __init__(self, filepath):
         self.injuries = []
@@ -35,159 +34,138 @@ class InjuryMonitor:
             try:
                 with open(self.filepath, 'r', encoding='utf-8') as f:
                     self.injuries = json.load(f)
-                print(f"🚑 Carregadas {len(self.injuries)} lesões do arquivo local.")
+                print(f"🚑 Matriz de degradação: {len(self.injuries)} lesões carregadas.")
             except Exception as e:
-                print(f"⚠️ Erro ao ler arquivo de lesões: {e}")
-        else:
-            print("⚠️ Arquivo de lesões não encontrado. Análise será feita sem contexto médico.")
+                print(f"⚠️ Erro ao ler matriz de lesões: {e}")
 
-    def get_team_injuries_text(self, team_name):
-        """Retorna texto formatado com as lesões principais do time"""
-        if not self.injuries:
-            return "Sem dados de lesão."
-
-        # Filtra lesões do time (busca aproximada)
-        team_injuries = [
-            i for i in self.injuries 
-            if team_name.lower() in i.get('team_name', '').lower() 
-            or i.get('team_abbreviation') == team_name.split()[-1] # Tenta pegar pelo último nome (ex: Lakers)
-        ]
-
-        if not team_injuries:
-            return "Nenhuma lesão reportada."
-
-        report = []
-        for inj in team_injuries:
-            # Focamos apenas em jogadores que impactam (exclui G-League/Two-Way se quiser filtrar mais)
-            status = inj.get('injury_status', 'Unknown')
-            player = inj.get('player_name', 'Unknown')
-            
-            # Emoji based on status
-            icon = "❌" if status == "Out" else "⚠️" if status in ["Day-To-Day", "Questionable"] else "ℹ️"
-            
-            report.append(f"{icon} {player} ({status})")
-        
-        return ", ".join(report) if report else "Time saudável."
-
-# Instancia o monitor globalmente
-injury_monitor = InjuryMonitor(INJURIES_FILE)
-
-def get_nba_date():
-    utc_now = datetime.now(pytz.utc)
-    et_now = utc_now.astimezone(pytz.timezone('US/Eastern'))
-    return et_now
-
+# --- FUNÇÃO DE EXTRAÇÃO DA ESPN (MANTIDA DO SETUP ORIGINAL) ---
 def get_espn_games(date_obj):
-    date_str = date_obj.strftime('%Y%m%d')
+    date_str = date_obj.strftime("%Y%m%d")
     url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={date_str}"
-    
-    print(f"📡 Consultando ESPN: {url}")
     try:
-        res = requests.get(url, timeout=10)
-        data = res.json()
-        
-        games_list = []
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        games = []
         for event in data.get('events', []):
             competition = event['competitions'][0]
-            status = event.get('status', {}).get('type', {}).get('state', 'pre')
-
-            if status == 'post':
-                continue
-
             competitors = competition['competitors']
-            home_team = next(t for t in competitors if t['homeAway'] == 'home')
-            away_team = next(t for t in competitors if t['homeAway'] == 'away')
-            
-            games_list.append({
-                'home': {
-                    'name': home_team['team']['displayName'],
-                    'record': home_team.get('records', [{'summary': '0-0'}])[0]['summary']
-                },
-                'away': {
-                    'name': away_team['team']['displayName'],
-                    'record': away_team.get('records', [{'summary': '0-0'}])[0]['summary']
-                }
+            home_team = next(c['team'] for c in competitors if c['homeAway'] == 'home')
+            away_team = next(c['team'] for c in competitors if c['homeAway'] == 'away')
+            games.append({
+                'id': event['id'],
+                'date': event['date'],
+                'home': home_team,
+                'away': away_team
             })
-        return games_list
+        return games
     except Exception as e:
-        print(f"❌ Erro na ESPN: {e}")
+        print(f"❌ Falha ao extrair payload da ESPN: {e}")
         return []
 
-def get_team_stats(team_name):
+# --- EXTRATOR DE MERCADO (ATUALIZAÇÃO V3.0) ---
+def get_market_odds(home_team, away_team):
     try:
-        search_term = team_name.split(' ')[-1]
-        res = supabase.table("classificacao_nba").select("*").ilike("time", f"%{search_term}%").execute()
-        if res.data: return res.data[0]
-        
-        search_term_first = team_name.split(' ')[0]
-        res_retry = supabase.table("classificacao_nba").select("*").ilike("time", f"%{search_term_first}%").execute()
-        if res_retry.data: return res_retry.data[0]
-            
+        res = supabase.table("nba_odds_matrix").select("*").execute()
+        for row in res.data:
+            matchup = row.get("matchup", "")
+            if home_team in matchup or away_team in matchup:
+                return row
+        return "Mercado Indisponível (Calcular projeção isolada)"
     except Exception as e:
-        print(f"⚠️ Erro ao buscar stats para {team_name}: {e}")
-    return None
-
-def analyze_game(game_data):
-    home = game_data['home']
-    away = game_data['away']
-    print(f"🤖 Analisando {home['name']} vs {away['name']}...")
-    
-    home_stats = get_team_stats(home['name'])
-    away_stats = get_team_stats(away['name'])
-
-    # Busca Lesões
-    home_injuries = injury_monitor.get_team_injuries_text(home['name'])
-    away_injuries = injury_monitor.get_team_injuries_text(away['name'])
-
-    prompt = f"""
-    Aja como um analista 'Sharp' profissional de NBA (Vegas Style).
-    Jogo: {home['name']} (Casa) vs {away['name']} (Fora).
-
-    DADOS TÉCNICOS:
-    - {home['name']}: Recorde {home['record']}, Streak: {home_stats.get('strk', 'N/A') if home_stats else 'N/A'}.
-    - {away['name']}: Recorde {away['record']}, Streak: {away_stats.get('strk', 'N/A') if away_stats else 'N/A'}.
-
-    🚨 RELATÓRIO DE LESÕES (CRÍTICO):
-    - {home['name']}: {home_injuries}
-    - {away['name']}: {away_injuries}
-
-    SETUP DE ANÁLISE:
-    1. IMPACTO DAS LESÕES: Se uma estrela (ex: LeBron, Curry, Giannis) estiver "Out", ignore o recorde do time e considere-o muito mais fraco. Se for "Day-To-Day", considere risco alto.
-    2. FADIGA: Considere cansaço se houver indicação de B2B (Back to Back).
-    3. MATCHUP: Defesa fraca contra ataque forte = Over. Jogo truncado = Under.
-    4. HANDICAP: Busque valor no Underdog se o Favorito estiver desfalcado.
-
-    Responda APENAS um JSON válido neste formato:
-    {{
-        "palpite_principal": "Ex: Lakers -5.0 ou Bulls +8.0",
-        "confianca": "Alta/Média/Baixa",
-        "fator_decisivo": "Sua explicação focada nas LESÕES e no matchup",
-        "analise_curta": "Resumo de 1 frase",
-        "linha_seguranca_over": "Ex: Over 215.5",
-        "linha_seguranca_under": "Ex: Under 238.5",
-        "alerta_lesao": "Sim/Não (Se houver estrela fora)"
-    }}
-    """
-    try:
-        chat = groq_client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}],
-            model=MODEL_ID, temperature=0.2, response_format={"type": "json_object"}
-        )
-        return json.loads(chat.choices[0].message.content)
-    except Exception as e:
-        print(f"⚠️ Erro Groq: {e}")
+        print(f"⚠️ Anomalia na extração de Odds: {e}")
         return None
 
-def main():
-    date_obj = get_nba_date()
-    date_iso = date_obj.strftime('%Y-%m-%d')
-    print(f"📅 Data NBA: {date_iso}")
+# --- ALGORITMO DE RESILIÊNCIA (FULL JITTER V3.0) ---
+def with_retry(func, retries=3, initial_delay=1.0, max_delay=10.0):
+    last_error = None
+    for attempt in range(retries + 1):
+        try:
+            return func()
+        except Exception as e:
+            last_error = e
+            if attempt == retries:
+                raise last_error
+            backoff_limit = min(max_delay, initial_delay * (2 ** attempt))
+            jitter_delay = random.uniform(0, backoff_limit)
+            print(f"[REDE] Latência no nó de inferência (Tentativa {attempt + 1}). Reiniciando em {jitter_delay:.2f}s...")
+            time.sleep(jitter_delay)
+    return None
+
+# --- MOTOR DE COLISÃO VETORIAL (GROQ JSON MODE) ---
+SYSTEM_INSTRUCTION = """Você é o Estatístico Chefe do sistema NBA-MONITOR.
+Processe a matriz de colisão vetorial e determine o 'Edge' (Vantagem Matemática).
+Você não é um comentarista. Aplique raciocínio determinístico e jargão termodinâmico.
+
+DIRETRIZES:
+1. PACE E EFICIÊNCIA: Cruze a eficiência de ataque/defesa projetada.
+2. DEGRADAÇÃO: Aplique penalidades pesadas baseadas no payload 'Desfalques'.
+3. ASSIMETRIA DE MERCADO: Compare sua projeção com 'Market_Odds'.
+
+SAÍDA OBRIGATÓRIA (JSON ESTrito):
+{
+  "palpite_principal": "string (ex: Lakers -4.5 ou Over 220.5)",
+  "confianca": "float (0 a 100)",
+  "linha_seguranca_over": "string",
+  "linha_seguranca_under": "string",
+  "alerta_lesao": "string (Sim/Não - Descreva impacto)",
+  "keyFactor": "string",
+  "detailedAnalysis": "string (Equação lógica de forma brutalista)"
+}"""
+
+def analyze_game(game_data, injuries_data):
+    home = game_data['home']['name']
+    away = game_data['away']['name']
     
+    market_data = get_market_odds(home, away)
+    game_injuries = [inj for inj in injuries_data if home in inj.get('team', '') or away in inj.get('team', '')]
+    
+    payload = {
+        "Confronto": f"{home} vs {away}",
+        "Desfalques_Confronto": game_injuries if game_injuries else "Nenhum desfalque crítico reportado",
+        "Market_Odds": market_data,
+    }
+
+    prompt = f"Execute a colisão vetorial rigorosa:\n{json.dumps(payload, indent=2, ensure_ascii=False)}"
+
+    def call_groq():
+        response = groq_client.chat.completions.create(
+            model=MODEL_ID,
+            messages=[
+                {"role": "system", "content": SYSTEM_INSTRUCTION},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1, # Frieza matemática ativada
+            response_format={"type": "json_object"} # Força saída JSON
+        )
+        return json.loads(response.choices[0].message.content)
+
+    try:
+        return with_retry(call_groq)
+    except Exception as e:
+        print(f"❌ Colapso de processamento ({home} vs {away}): {e}")
+        return None
+
+# --- CICLO DE EXECUÇÃO PRINCIPAL ---
+if __name__ == "__main__":
+    tz = pytz.timezone('America/Sao_Paulo')
+    now = datetime.now(tz)
+    
+    # Se passar das 10h da manhã, foca nos jogos do dia atual, senão pega os de ontem
+    if now.hour < 10:
+        date_obj = now - timedelta(days=1)
+    else:
+        date_obj = now
+        
+    date_iso = date_obj.strftime("%Y-%m-%d")
+    print(f"🏀 Iniciando Varredura. Data: {date_iso}")
+    
+    inj_monitor = InjuryMonitor(INJURIES_FILE)
     games = get_espn_games(date_obj)
 
     if not games:
-        print("💤 Nenhum jogo futuro encontrado para hoje.")
-        return
+        print("💤 Matriz de jogos vazia. Encerrando operação.")
+        exit(0)
 
     predictions = []
     for game in games:
@@ -195,7 +173,9 @@ def main():
         away = game['away']['name']
         game_id = f"{date_iso}_{home}_{away}".replace(" ", "")
 
-        ai_result = analyze_game(game)
+        print(f"⚡ Processando colisão: {home} vs {away}...")
+        ai_result = analyze_game(game, inj_monitor.injuries)
+        
         if ai_result:
             prediction_json_str = json.dumps(ai_result, ensure_ascii=False)
 
@@ -205,22 +185,21 @@ def main():
                 "home_team": home,
                 "away_team": away,
                 "prediction": prediction_json_str,
-                "main_pick": ai_result.get("palpite_principal"),
-                "confidence": ai_result.get("confianca"),
-                "over_line": ai_result.get("linha_seguranca_over"),
-                "under_line": ai_result.get("linha_seguranca_under"),
-                "injury_alert": ai_result.get("alerta_lesao", "Não") # Nova coluna
+                "main_pick": ai_result.get("palpite_principal", "N/A"),
+                "confidence": float(ai_result.get("confianca", 0.0)),
+                "over_line": ai_result.get("linha_seguranca_over", ""),
+                "under_line": ai_result.get("linha_seguranca_under", ""),
+                "injury_alert": ai_result.get("alerta_lesao", "Não"),
+                "key_factor": ai_result.get("keyFactor", "")
             })
-        time.sleep(1.5) # Pausa leve para não estourar rate limit da Groq
+        
+        # Pausa termodinâmica para preservar limite de requisições
+        time.sleep(1.5)
 
     if predictions:
-        print(f"💾 Salvando {len(predictions)} previsões...")
+        print(f"💾 Sincronizando {len(predictions)} predições com Supabase...")
         try:
-            # Upsert atualizado
             supabase.table("game_predictions").upsert(predictions).execute()
-            print("✅ Sucesso!")
-        except Exception as db_err:
-            print(f"❌ Erro ao salvar no banco: {db_err}")
-
-if __name__ == "__main__":
-    main()
+            print("✅ Sincronização concluída com sucesso.")
+        except Exception as e:
+            print(f"❌ Falha crítica ao persistir dados: {e}")
