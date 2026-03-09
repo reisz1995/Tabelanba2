@@ -1,12 +1,59 @@
+name: Atualização Diária da NBA
+
+on:
+  schedule:
+    - cron: '0 */11 * * *'
+  workflow_dispatch:
+
+jobs:
+  update-nba-data:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Baixar código
+        uses: actions/checkout@v4
+
+      # --- FASE 1: NODE.JS (ESTADO BASE E MERCADO) ---
+      - name: 🟢 Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: 📦 Instalar dependências Node
+        run: npm ci
+
       - name: 🏀 Sincronizar Core de Dados (Classificação, Jogadores e Mercado)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-          # Mapeamento estrito para garantir que o cliente Supabase no arquivo TS inicialize
           VITE_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
           node scrape.js
           node importPlayers.js
           npx --yes tsx scrape-nba-odds.ts
+      
+      # --- FASE 2: PYTHON (ENTROPIA FÍSICA E IA V3.0) ---
+      - name: 🐍 Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
           
+      - name: 📦 Instalar dependências Python
+        run: pip install requests supabase groq pytz
+
+      - name: 🏥 Buscar Lesões (Gera nba_injuries.json)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python nba_injuries_api.py
+
+      - name: 🔮 Gerar Previsões (Estatístico Chefe V3.0)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: python predict_games.py
+        
