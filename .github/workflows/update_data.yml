@@ -1,19 +1,4 @@
-name: Atualização Diária da NBA
-
-on:
-  schedule:
-    - cron: '0 */11 * * *'
-  workflow_dispatch:
-
-jobs:
-  update-nba-data:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: 📥 Baixar código
-        uses: actions/checkout@v4
-
-      # --- NODE.JS ---
+      # --- NODE.JS (EXTRAÇÃO DE MATRIZ DE DADOS E MERCADO) ---
       - name: 🟢 Configurar Node.js
         uses: actions/setup-node@v4
         with:
@@ -23,35 +8,13 @@ jobs:
       - name: 📦 Instalar dependências Node
         run: npm ci
 
-      - name: 🏀 Atualizar Classificação e Jogadores
+      - name: 🏀 Sincronizar Core de Dados (Classificação, Jogadores e Mercado)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          # Mapeamento dinâmico para garantir que o script de Odds acesse as chaves via process.env
+          VITE_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         run: |
           node scrape.js
           node importPlayers.js
-      
-      # --- PYTHON ---
-      - name: 🐍 Configurar Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-          cache: 'pip' # Cache automático do pip
-          
-      - name: 📦 Instalar dependências Python
-        run: pip install requests supabase groq pytz
-
-      # 1. Busca lesões e salva o JSON localmente (e no banco se o script fizer isso)
-      - name: 🏥 Buscar Lesões (Gera nba_injuries.json)
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: python nba_injuries_api.py
-
-      # 2. Gera previsões LENDO o JSON do passo anterior
-      - name: 🔮 Gerar Previsões (IA com Lesões)
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-        run: python predict_games.py
+          npx tsx scrape-nba-odds.ts 
