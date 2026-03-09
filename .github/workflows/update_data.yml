@@ -30,9 +30,11 @@ jobs:
           VITE_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
+          npm install -g tsx
           node scrape.js
           node importPlayers.js
-          npx --yes tsx scrape-nba-odds.ts
+          tsx scrape-nba-odds.ts
+
       
       # --- FASE 2: PYTHON (ENTROPIA FÍSICA E IA V3.0) ---
       - name: 🐍 Configurar Python
