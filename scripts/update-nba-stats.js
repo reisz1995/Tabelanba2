@@ -1,21 +1,19 @@
 import { createClient } from '@supabase/supabase-js';
 
-// Verifica credenciais
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
-  console.error('❌ Erro Crítico: Credenciais do Supabase não encontradas nos Segredos do GitHub.');
+  console.error('❌ COLAPSO: Credenciais ausentes da matriz de ambiente.');
   process.exit(1);
 }
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 async function updateTeams() {
-  console.log('🏀 Iniciando atualização da NBA (Modo: Nome Completo)...');
+  console.log('🏀 Inicializando atualização de Momentum Global (Topologia JSON Rica)...');
   
   try {
-    // 1. Busca todos os times da ESPN
     const espnResponse = await fetch('https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams?limit=100');
     const espnData = await espnResponse.json();
     const espnTeams = espnData.sports[0].leagues[0].teams;
@@ -24,57 +22,48 @@ async function updateTeams() {
     let errorCount = 0;
 
     for (const item of espnTeams) {
-      const teamData = item.team;
-      const teamId = teamData.id;
-      const fullName = teamData.displayName; // Ex: "Boston Celtics" (Combina com seu novo Banco de Dados)
+      const teamId = item.team.id;
+      const fullName = item.team.displayName; 
 
-      // 2. Busca o calendário (últimos jogos) para este time
       const scheduleResp = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${teamId}/schedule`);
       const scheduleData = await scheduleResp.json();
       
-      // Filtra apenas jogos finalizados ('post') e ordena por data
       const finishedGames = (scheduleData.events || [])
         .filter(e => e.competitions[0].status.type.state === 'post')
         .sort((a, b) => new Date(a.date) - new Date(b.date));
 
-      // Pega os últimos 5 resultados
       const last5 = finishedGames.slice(-5).map(game => {
-        const competitor = game.competitions[0].competitors.find(c => c.id === teamId);
-        // Se ganhou = 'V', senão 'D'
-        return (competitor && competitor.winner) ? 'V' : 'D'; 
+        const comp = game.competitions[0];
+        const mainTeam = comp.competitors.find(c => c.id === teamId);
+        const oppTeam = comp.competitors.find(c => c.id !== teamId);
+        
+        const dt = new Date(game.date);
+        return {
+          date: `${String(dt.getDate()).padStart(2, '0')}/${String(dt.getMonth() + 1).padStart(2, '0')}`,
+          opponent: oppTeam.team.abbreviation,
+          result: mainTeam.winner ? 'V' : 'D',
+          score: `${Math.max(mainTeam.score, oppTeam.score)}-${Math.min(mainTeam.score, oppTeam.score)}`
+        };
       });
 
-      // Preenche com 'D' se tiver menos de 5 jogos na temporada (início de season)
-      while (last5.length < 5) last5.unshift('D');
-
-      // 3. Atualiza no Supabase usando COMPARAÇÃO EXATA (.eq)
       const { data, error } = await supabase
         .from('teams')
-        .update({ 
-          record: last5,
-          updated_at: new Date().toISOString()
-        }) 
-        .eq('name', fullName) // Agora busca exato: "Boston Celtics" == "Boston Celtics"
+        .update({ record: last5, updated_at: new Date().toISOString() }) 
+        .eq('name', fullName)
         .select();
 
       if (error) {
-        console.error(`❌ Erro ao salvar ${fullName}:`, error.message);
+        console.error(`❌ Fissura ao injetar ${fullName}:`, error.message);
         errorCount++;
       } else if (data && data.length > 0) {
-        console.log(`✅ ${fullName}: [${last5.join('-')}] atualizado.`);
+        console.log(`✅ ${fullName}: Matriz temporal atualizada.`);
         successCount++;
-      } else {
-        console.warn(`⚠️ ${fullName}: Time não encontrado no banco de dados (Verifique se o nome está idêntico).`);
-        errorCount++;
       }
     }
-    
-    console.log(`\n🏁 Resumo: ${successCount} atualizados com sucesso, ${errorCount} erros/não encontrados.`);
-
+    console.log(`\n🏁 Ciclo encerrado: ${successCount} atualizados.`);
   } catch (error) {
-    console.error('❌ Erro fatal no script:', error);
+    console.error('❌ Colapso termodinâmico:', error);
     process.exit(1);
   }
 }
-
 updateTeams();
