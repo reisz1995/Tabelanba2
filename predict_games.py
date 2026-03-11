@@ -12,11 +12,11 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
-if not all([SUPABASE_URL, SUPABASE_KEY, GROQ_API_KEY]):
+if not all([SUPABASE_URL, SUPABASE_ROLE_KEY, GROQ_API_KEY]):
     print("❌ COLAPSO_DE_SISTEMA: Faltam variáveis.")
     exit(1)
 
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase = create_client(SUPABASE_URL, SUPABASE_ROLE_KEY)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 class InjuryMonitor:
