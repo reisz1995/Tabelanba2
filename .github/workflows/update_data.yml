@@ -15,7 +15,7 @@ jobs:
       - name: 📥 CHECKOUT CODE
         uses: actions/checkout@v4
 
-      # --- FASE 1: NODE.JS (CORE DATA) ---
+      # --- FASE 1: NODE.JS (CORE DATA & MOMENTUM) ---
       - name: 🟢 SETUP NODE.JS
         uses: actions/setup-node@v4
         with:
@@ -31,11 +31,10 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
           node scrape.js
-          nba_injuries_api.py
           node importPlayers.js
-          update-nba-stats.js
+          node update-nba-stats.js
       
-      # --- FASE 2: PYTHON (ESTATÍSTICO CHEFE) ---
+      # --- FASE 2: PYTHON (ESTATÍSTICO CHEFE & LESÕES) ---
       - name: 🐍 SETUP PYTHON
         uses: actions/setup-python@v5
         with:
@@ -57,21 +56,3 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: python predict_games.py
-
-      # --- FASE 3: NOTIFICAÇÃO (TERMINAL ANDROID) ---
-      - name: 📱 SEND TELEGRAM NOTIFICATION
-        if: always()
-        uses: appleboy/telegram-action@master
-        with:
-          to: ${{ secrets.TELEGRAM_TO }}
-          token: ${{ secrets.TELEGRAM_TOKEN }}
-          format: markdown
-          message: |
-            *NBA MONITOR: EXECUÇÃO CONCLUÍDA*
-            ---
-            *STATUS:* ${{ job.status }}
-            *DATA:* ${{ github.event.head_commit.timestamp }}
-            *LOG:* [VER EXECUÇÃO](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
-            
-            _PREVISÕES ATUALIZADAS NO SUPABASE (V3.0)_
-            
