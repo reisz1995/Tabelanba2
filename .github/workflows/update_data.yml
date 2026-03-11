@@ -32,6 +32,7 @@ jobs:
         run: |
           node scrape.js
           node importPlayers.js
+          update-nba-stats.js
       
       # --- FASE 2: PYTHON (ESTATÍSTICO CHEFE) ---
       - name: 🐍 SETUP PYTHON
