@@ -15,11 +15,11 @@ jobs:
       - name: 📥 CHECKOUT CODE
         uses: actions/checkout@v4
 
-      # --- FASE 1: NODE.JS (CORE DATA & MOMENTUM) ---
+      #       # --- FASE 1: NODE.JS (CORE DATA & MOMENTUM) ---
       - name: 🟢 SETUP NODE.JS
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '20' # <--- MUTAÇÃO PARA A VERSÃO 20
           cache: 'npm'
 
       - name: 📦 INSTALL NODE DEPENDENCIES
