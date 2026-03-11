@@ -1,8 +1,8 @@
 import { createClient } from '@supabase/supabase-js';
 
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
+// Mapeamento retificado para consumir a variável exata injetada pelo workflow
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
   console.error('❌ COLAPSO: Credenciais ausentes da matriz de ambiente.');
