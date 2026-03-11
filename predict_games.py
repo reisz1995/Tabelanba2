@@ -49,7 +49,7 @@ def get_market_odds(home_full, away_full):
 def extract_h2h(team_id, opponent_id):
     url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/{team_id}/schedule"
     try:
-        events = requests.get(url).json().get('events', [])
+        events = requests.get(url, timeout=10).json().get('events', [])
         past_games = [e for e in events if e['competitions'][0]['status']['type']['state'] == 'post']
         past_games.sort(key=lambda x: x['date'], reverse=True)
         h2h_raw = [g for g in past_games if any(c['id'] == str(opponent_id) for c in g['competitions'][0]['competitors'])]
@@ -60,14 +60,26 @@ def extract_h2h(team_id, opponent_id):
             main = next(c for c in comp if c['id'] == str(team_id))
             opp = next(c for c in comp if c['id'] != str(team_id))
             dt = datetime.strptime(g['date'], "%Y-%m-%dT%H:%MZ")
+            
+            # Sub-rotina de extração termodinâmica de pontos
+            def get_score(c):
+                s = c.get('score', 0)
+                if isinstance(s, dict): return int(s.get('value', 0))
+                return int(s) if s else 0
+                
+            main_s = get_score(main)
+            opp_s = get_score(opp)
+            
             parsed.append({
                 "date": dt.strftime("%d/%m"),
                 "result": 'V' if main.get('winner') else 'D',
-                "score": f"{max(int(main.get('score',0)), int(opp.get('score',0)))}-{min(int(main.get('score',0)), int(opp.get('score',0)))}"
+                "score": f"{max(main_s, opp_s)}-{min(main_s, opp_s)}"
             })
         return parsed
-    except: return []
-
+    except Exception as e:
+        print(f"⚠️ Colapso na extração H2H: {e}")
+        return []
+        
 def with_retry(func, retries=3):
     for attempt in range(retries + 1):
         try: return func()
