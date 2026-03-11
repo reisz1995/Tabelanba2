@@ -1,57 +1,75 @@
-NAME: ATUALIZAÇÃO DIÁRIA DA NBA
+name: ATUALIZAÇÃO DIÁRIA DA NBA (V3.3)
 
-ON:
-  SCHEDULE:
+on:
+  schedule:
     # DISPARO ÚNICO ÀS 09:00 BRT (12:00 UTC)
-    - CRON: '0 12 * * *'
-  WORKFLOW_DISPATCH:
+    - cron: '0 12 * * *'
+  workflow_dispatch:
 
-JOBS:
-  UPDATE-NBA-DATA:
-    RUNS-ON: UBUNTU-LATEST
-    TIMEOUT-MINUTES: 15
+jobs:
+  update-nba-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
 
-    STEPS:
-      - NAME: 📥 CHECKOUT CODE
-        USES: ACTIONS/CHECKOUT@V4
+    steps:
+      - name: 📥 CHECKOUT CODE
+        uses: actions/checkout@v4
 
-      # --- FASE 1: NODE.JS (ESTADO BASE DA NBA) ---
-      - NAME: 🟢 SETUP NODE.JS
-        USES: ACTIONS/SETUP-NODE@V4
-        WITH:
-          NODE-VERSION: '18'
-          CACHE: 'NPM'
+      # --- FASE 1: NODE.JS (CORE DATA) ---
+      - name: 🟢 SETUP NODE.JS
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
 
-      - NAME: 📦 INSTALL NODE DEPENDENCIES
-        RUN: NPM CI
+      - name: 📦 INSTALL NODE DEPENDENCIES
+        run: npm ci
 
-      - NAME: 🏀 SYNC CORE DATA (SUPABASE)
-        ENV:
-          SUPABASE_URL: ${{ SECRETS.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ SECRETS.SUPABASE_SERVICE_KEY }}
-        RUN: |
-          NODE SCRAPE.JS
-          NODE IMPORTPLAYERS.JS
+      - name: 🏀 SYNC CORE DATA
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          node scrape.js
+          node importPlayers.js
       
-      # --- FASE 2: PYTHON (ENTROPIA FÍSICA E IA V3.0) ---
-      - NAME: 🐍 SETUP PYTHON
-        USES: ACTIONS/SETUP-PYTHON@V5
-        WITH:
-          PYTHON-VERSION: '3.10'
-          CACHE: 'PIP'
+      # --- FASE 2: PYTHON (ESTATÍSTICO CHEFE) ---
+      - name: 🐍 SETUP PYTHON
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
           
-      - NAME: 📦 INSTALL PYTHON DEPENDENCIES
-        RUN: PIP INSTALL REQUESTS SUPABASE GROQ PYTZ
+      - name: 📦 INSTALL PYTHON DEPENDENCIES
+        run: pip install requests supabase groq pytz
 
-      - NAME: 🏥 FETCH INJURIES (NBA_INJURIES.JSON)
-        ENV:
-          SUPABASE_URL: ${{ SECRETS.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ SECRETS.SUPABASE_SERVICE_KEY }}
-        RUN: PYTHON NBA_INJURIES_API.PY
+      - name: 🏥 FETCH INJURIES
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python nba_injuries_api.py
 
-      - NAME: 🔮 GENERATE PREDICTIONS (ESTATÍSTICO CHEFE)
-        ENV:
-          SUPABASE_URL: ${{ SECRETS.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ SECRETS.SUPABASE_SERVICE_KEY }}
-          GROQ_API_KEY: ${{ SECRETS.GROQ_API_KEY }}
-        RUN: PYTHON PREDICT_GAMES.PY
+      - name: 🔮 GENERATE PREDICTIONS
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: python predict_games.py
+
+      # --- FASE 3: NOTIFICAÇÃO (TERMINAL ANDROID) ---
+      - name: 📱 SEND TELEGRAM NOTIFICATION
+        if: always()
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ secrets.TELEGRAM_TO }}
+          token: ${{ secrets.TELEGRAM_TOKEN }}
+          format: markdown
+          message: |
+            *NBA MONITOR: EXECUÇÃO CONCLUÍDA*
+            ---
+            *STATUS:* ${{ job.status }}
+            *DATA:* ${{ github.event.head_commit.timestamp }}
+            *LOG:* [VER EXECUÇÃO](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            
+            _PREVISÕES ATUALIZADAS NO SUPABASE (V3.0)_
+            
