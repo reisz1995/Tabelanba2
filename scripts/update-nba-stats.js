@@ -32,19 +32,29 @@ async function updateTeams() {
         .filter(e => e.competitions[0].status.type.state === 'post')
         .sort((a, b) => new Date(a.date) - new Date(b.date));
 
+            // ... [Código anterior até a filtragem finishedGames]
+
       const last5 = finishedGames.slice(-5).map(game => {
         const comp = game.competitions[0];
         const mainTeam = comp.competitors.find(c => c.id === teamId);
         const oppTeam = comp.competitors.find(c => c.id !== teamId);
+        
+        // Extrator Determinístico de Score (Ignora diferenças de tipo da API)
+        const getScore = (c) => typeof c.score === 'object' ? (c.score.value || 0) : (parseInt(c.score) || 0);
+        const mainScore = getScore(mainTeam);
+        const oppScore = getScore(oppTeam);
         
         const dt = new Date(game.date);
         return {
           date: `${String(dt.getDate()).padStart(2, '0')}/${String(dt.getMonth() + 1).padStart(2, '0')}`,
           opponent: oppTeam.team.abbreviation,
           result: mainTeam.winner ? 'V' : 'D',
-          score: `${Math.max(mainTeam.score, oppTeam.score)}-${Math.min(mainTeam.score, oppTeam.score)}`
+          score: `${Math.max(mainScore, oppScore)}-${Math.min(mainScore, oppScore)}`
         };
       });
+
+      // ... [Segue o código de injeção no Supabase]
+
 
       const { data, error } = await supabase
         .from('teams')
