@@ -48,8 +48,18 @@ def get_market_odds(home_full, away_full):
 
 def extract_h2h(team_id, opponent_id):
     url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/{team_id}/schedule"
+    
+    # Isola a requisição para usar o motor de retentativas
+    def fetch_schedule():
+        res = requests.get(url, timeout=10)
+        res.raise_for_status() # Força um erro se a ESPN bloquear o acesso (HTTP 429/500)
+        return res.json().get('events', [])
+
     try:
-        events = requests.get(url, timeout=10).json().get('events', [])
+        # Se falhar, o with_retry espera e tenta novamente até 3 vezes
+        events = with_retry(fetch_schedule, retries=3)
+        if not events: return []
+        
         past_games = [e for e in events if e['competitions'][0]['status']['type']['state'] == 'post']
         past_games.sort(key=lambda x: x['date'], reverse=True)
         h2h_raw = [g for g in past_games if any(c['id'] == str(opponent_id) for c in g['competitions'][0]['competitors'])]
@@ -61,7 +71,6 @@ def extract_h2h(team_id, opponent_id):
             opp = next(c for c in comp if c['id'] != str(team_id))
             dt = datetime.strptime(g['date'], "%Y-%m-%dT%H:%MZ")
             
-            # Sub-rotina de extração termodinâmica de pontos
             def get_score(c):
                 s = c.get('score', 0)
                 if isinstance(s, dict): return int(s.get('value', 0))
@@ -77,7 +86,7 @@ def extract_h2h(team_id, opponent_id):
             })
         return parsed
     except Exception as e:
-        print(f"⚠️ Colapso na extração H2H: {e}")
+        print(f"⚠️ Colapso na extração H2H (Rede/API): {e}")
         return []
         
 def with_retry(func, retries=3):
