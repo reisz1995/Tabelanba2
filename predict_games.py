@@ -9,7 +9,7 @@ from supabase import create_client
 from groq import Groq
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
+SUPABASE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
 if not all([SUPABASE_URL, SUPABASE_KEY, GROQ_API_KEY]):
