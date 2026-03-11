@@ -22,12 +22,15 @@ async function updateTeams() {
     let successCount = 0;
     let errorCount = 0;
 
-    for (const item of espnTeams) {
+        for (const item of espnTeams) {
       const teamId = item.team.id;
       const fullName = item.team.displayName; 
 
       const scheduleResp = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${teamId}/schedule`);
       const scheduleData = await scheduleResp.json();
+      
+      // 🛡️ DISSIPADOR TÉRMICO INJETADO: Pausa de 800ms para evitar Rate Limit
+      await new Promise(resolve => setTimeout(resolve, 800));
       
       const finishedGames = (scheduleData.events || [])
         .filter(e => e.competitions[0].status.type.state === 'post')
