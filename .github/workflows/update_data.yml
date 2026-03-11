@@ -2,7 +2,6 @@ name: ATUALIZAÇÃO DIÁRIA DA NBA (V3.3)
 
 on:
   schedule:
-    # DISPARO ÚNICO ÀS 09:00 BRT (12:00 UTC)
     - cron: '0 12 * * *'
   workflow_dispatch:
 
@@ -15,11 +14,11 @@ jobs:
       - name: 📥 CHECKOUT CODE
         uses: actions/checkout@v4
 
-      #       # --- FASE 1: NODE.JS (CORE DATA & MOMENTUM) ---
+      # --- FASE 1: NODE.JS (CORE DATA & MOMENTUM) ---
       - name: 🟢 SETUP NODE.JS
         uses: actions/setup-node@v4
         with:
-          node-version: '20' # <--- MUTAÇÃO PARA A VERSÃO 20
+          node-version: '20'
           cache: 'npm'
 
       - name: 📦 INSTALL NODE DEPENDENCIES
@@ -28,7 +27,9 @@ jobs:
       - name: 🏀 SYNC CORE DATA
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          # INJEÇÃO DUPLA: Nutre tanto os scripts antigos como os novos
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY || secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_SERVICE_KEY }}
         run: |
           node scrape.js
           node importPlayers.js
@@ -47,12 +48,15 @@ jobs:
       - name: 🏥 FETCH INJURIES
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY || secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: python nba_injuries_api.py
 
       - name: 🔮 GENERATE PREDICTIONS
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          # INJEÇÃO DUPLA: Blinda o predict_games.py contra falhas de nomenclatura
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY || secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_SERVICE_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: python predict_games.py
+        
