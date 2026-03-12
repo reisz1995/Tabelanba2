@@ -27,6 +27,7 @@ jobs:
       - name: 🏀 SYNC CORE DATA
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          # INJEÇÃO DUPLA: Nutre tanto os scripts antigos como os novos
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY || secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_SERVICE_KEY }}
         run: |
@@ -42,20 +43,21 @@ jobs:
           cache: 'pip'
           
       - name: 📦 INSTALL PYTHON DEPENDENCIES
-        run: pip install requests supabase google-generativeai pytz
+        run: pip install requests supabase groq pytz
 
       - name: 🏥 FETCH INJURIES
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY || secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_SERVICE_KEY }}
         run: python nba_injuries_api.py
 
       - name: 🔮 GENERATE PREDICTIONS
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          # INJEÇÃO DUPLA: Blinda o predict_games.py contra falhas de nomenclatura
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY || secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_SERVICE_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: python predict_games.py
+
         
