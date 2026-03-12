@@ -6,18 +6,18 @@ import requests
 from datetime import datetime, timedelta
 import pytz
 from supabase import create_client
-import google.generativeai as genai
+from groq import Groq
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
 if not all([SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, GROQ_API_KEY]):
-    print("❌ COLAPSO_DE_SISTEMA: Faltam variáveis de ambiente críticas.")
+    print("âŒ COLAPSO_DE_SISTEMA: Faltam variÃ¡veis.")
     exit(1)
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-genai.configure(api_key=GROQ_API_KEY)
+groq_client = Groq(api_key=GROQ_API_KEY)
 
 class InjuryMonitor:
     def __init__(self, filepath):
@@ -44,29 +44,19 @@ def get_market_odds(home_full, away_full):
     for row in res.data:
         if home_full in row.get("matchup", "") or away_full in row.get("matchup", ""):
             return row
-    return "Mercado Indisponível"
-
-def with_retry(func, retries=3, base_delay=2.0):
-    for attempt in range(retries + 1):
-        try:
-            return func()
-        except requests.exceptions.RequestException as e:
-            if attempt == retries:
-                print(f"❌ [FALHA_CRÍTICA] Esgotamento de retentativas: {e}")
-                raise e
-            delay = (base_delay * (2 ** attempt)) + random.uniform(0, 1.0)
-            print(f"⚠️ [ANOMALIA_DE_REDE] Tentativa {attempt + 1}/{retries} falhou. Backoff ativo: aguardando {delay:.2f}s...")
-            time.sleep(delay)
+    return "Mercado IndisponÃ­vel"
 
 def extract_h2h(team_id, opponent_id):
     url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/{team_id}/schedule"
     
+    # Isola a requisiÃ§Ã£o para usar o motor de retentativas
     def fetch_schedule():
-        res = requests.get(url, timeout=7)
-        res.raise_for_status() 
+        res = requests.get(url, timeout=10)
+        res.raise_for_status() # ForÃ§a um erro se a ESPN bloquear o acesso (HTTP 429/500)
         return res.json().get('events', [])
 
     try:
+        # Se falhar, o with_retry espera e tenta novamente atÃ© 3 vezes
         events = with_retry(fetch_schedule, retries=3)
         if not events: return []
         
@@ -75,7 +65,7 @@ def extract_h2h(team_id, opponent_id):
         h2h_raw = [g for g in past_games if any(c['id'] == str(opponent_id) for c in g['competitions'][0]['competitors'])]
         
         parsed = []
-        for g in h2h_raw[:2]: 
+        for g in h2h_raw[:2]:
             comp = g['competitions'][0]['competitors']
             main = next(c for c in comp if c['id'] == str(team_id))
             opp = next(c for c in comp if c['id'] != str(team_id))
@@ -96,12 +86,19 @@ def extract_h2h(team_id, opponent_id):
             })
         return parsed
     except Exception as e:
-        print(f"⚠️ [COLAPSO_H2H] Falha irrecuperável na extração H2H: {e}")
+        print(f"âš ï¸ Colapso na extraÃ§Ã£o H2H (Rede/API): {e}")
         return []
+        
+def with_retry(func, retries=3):
+    for attempt in range(retries + 1):
+        try: return func()
+        except Exception as e:
+            if attempt == retries: raise e
+            time.sleep(1.5)
 
-SYSTEM_INSTRUCTION = """Você é o Estatístico Chefe do sistema NBA-MONITOR. Calcule o Edge.
-DIRETRIZES: Avalie ritmo, degradação térmica (lesões) e assimetria de mercado (Market_Odds). 
-SAÍDA OBRIGATÓRIA (JSON Estrito):
+SYSTEM_INSTRUCTION = """VocÃª Ã© o EstatÃ­stico Chefe do sistema NBA-MONITOR. Calcule o Edge.
+DIRETRIZES: Avalie ritmo, degradaÃ§Ã£o tÃ©rmica (lesÃµes) e assimetria de mercado (Market_Odds). 
+SAÃDA OBRIGATÃ“RIA (JSON Estrito):
 {"palpite_principal": "string", "confianca": 0.0, "linha_seguranca_over": "string", "linha_seguranca_under": "string", "alerta_lesao": "string", "keyFactor": "string", "detailedAnalysis": "string"}"""
 
 def analyze_game(game, inj, h2h):
@@ -116,33 +113,20 @@ def analyze_game(game, inj, h2h):
         "Market_Odds": get_market_odds(home, away)
     }
     
-    def call_ai_studio():
-        model = genai.GenerativeModel(
-            model_name="gemini-3-flash_preview",
-            system_instruction=SYSTEM_INSTRUCTION,
-            generation_config={
-                "response_mime_type": "application/json",
-                "temperature": 0.1
-            }
+    def call_groq():
+        res = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "system", "content": SYSTEM_INSTRUCTION}, {"role": "user", "content": json.dumps(payload)}],
+            temperature=0.1, response_format={"type": "json_object"}
         )
-        res = model.generate_content(json.dumps(payload))
-        return json.loads(res.text)
+        return json.loads(res.choices[0].message.content)
     
-    try: 
-        def retry_ai():
-            for attempt in range(3):
-                try: return call_ai_studio()
-                except Exception as e:
-                    if attempt == 2: raise e
-                    time.sleep(2)
-        return retry_ai()
-    except Exception as e: 
-        print(f"❌ [FALHA_ESTATÍSTICO_CHEFE] Erro na geração do Edge: {e}")
-        return None
+    try: return with_retry(call_groq)
+    except Exception as e: print(f"âŒ Erro IA: {e}"); return None
 
 if __name__ == "__main__":
     now = datetime.now(pytz.timezone('America/Sao_Paulo'))
-    date_obj = now - timedelta(days=1) if now.hour < 6 else now
+    date_obj = now - timedelta(days=1) if now.hour < 10 else now
     date_iso = date_obj.strftime("%Y-%m-%d")
     
     inj_monitor = InjuryMonitor("nba_injuries.json")
@@ -154,7 +138,7 @@ if __name__ == "__main__":
         away_full = game['away']['displayName']
         game_id = f"{date_iso}_{home_full}_{away_full}".replace(" ", "_")
         
-        print(f"⚡ Processando colisão: {home_full} vs {away_full}")
+        print(f"âš¡ Processando colisÃ£o: {home_full} vs {away_full}")
         h2h_data = {"home_vs_away": extract_h2h(game['home']['id'], game['away']['id'])}
         
         ai_result = analyze_game(game, inj_monitor.injuries, h2h_data)
@@ -166,7 +150,7 @@ if __name__ == "__main__":
                 "confidence": float(ai_result.get("confianca", 0.0)),
                 "over_line": ai_result.get("linha_seguranca_over", ""),
                 "under_line": ai_result.get("linha_seguranca_under", ""),
-                "injury_alert": ai_result.get("alerta_lesao", "Não"),
+                "injury_alert": ai_result.get("alerta_lesao", "NÃ£o"),
                 "key_factor": ai_result.get("keyFactor", ""),
                 "momentum_data": h2h_data
             })
@@ -174,5 +158,4 @@ if __name__ == "__main__":
 
     if predictions:
         supabase.table("game_predictions").upsert(predictions).execute()
-        print("✅ Matriz de predições selada no banco de dados.")
-        
+        print("âœ… Matriz selada.")
