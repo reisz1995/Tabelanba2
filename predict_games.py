@@ -10,14 +10,14 @@ import google.generativeai as genai
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-if not all([SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, GOOGLE_API_KEY]):
+if not all([SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, GEMINI_API_KEY]):
     print("❌ COLAPSO_DE_SISTEMA: Faltam variáveis de ambiente críticas.")
     exit(1)
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-genai.configure(api_key=GOOGLE_API_KEY)
+genai.configure(api_key=GEMINI_API_KEY)
 
 class InjuryMonitor:
     def __init__(self, filepath):
@@ -100,7 +100,7 @@ def extract_h2h(team_id, opponent_id):
         return []
 
 SYSTEM_INSTRUCTION = """Você é o Estatístico Chefe do sistema NBA-MONITOR. Calcule o Edge.
-DIRETRIZES: Avalie ritmo, avalie o momento, degradação térmica (lesões) e assimetria de mercado (Market_Odds). 
+DIRETRIZES: Avalie ritmo, degradação térmica (lesões) e assimetria de mercado (Market_Odds). 
 SAÍDA OBRIGATÓRIA (JSON Estrito):
 {"palpite_principal": "string", "confianca": 0.0, "linha_seguranca_over": "string", "linha_seguranca_under": "string", "alerta_lesao": "string", "keyFactor": "string", "detailedAnalysis": "string"}"""
 
@@ -118,7 +118,7 @@ def analyze_game(game, inj, h2h):
     
     def call_ai_studio():
         model = genai.GenerativeModel(
-            model_name="gemini-3-flash-preview",
+            model_name="gemini-3-flash_preview",
             system_instruction=SYSTEM_INSTRUCTION,
             generation_config={
                 "response_mime_type": "application/json",
@@ -129,7 +129,6 @@ def analyze_game(game, inj, h2h):
         return json.loads(res.text)
     
     try: 
-        # Embrulhado na função base de retentativa para evitar que falhas transientes da API deêm crash
         def retry_ai():
             for attempt in range(3):
                 try: return call_ai_studio()
@@ -143,7 +142,6 @@ def analyze_game(game, inj, h2h):
 
 if __name__ == "__main__":
     now = datetime.now(pytz.timezone('America/Sao_Paulo'))
-    # Limiar reduzido para 6, garantindo alinhamento com a hora do CRON e a meia-noite
     date_obj = now - timedelta(days=1) if now.hour < 6 else now
     date_iso = date_obj.strftime("%Y-%m-%d")
     
@@ -177,4 +175,3 @@ if __name__ == "__main__":
     if predictions:
         supabase.table("game_predictions").upsert(predictions).execute()
         print("✅ Matriz de predições selada no banco de dados.")
-        
