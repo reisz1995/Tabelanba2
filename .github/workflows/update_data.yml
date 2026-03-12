@@ -2,8 +2,10 @@ name: ATUALIZAÇÃO DIÁRIA DA NBA (V3.3)
 
 on:
   schedule:
-    - cron: '0 12 * * *'
+    # DISPARO ÚNICO ÀS 12:00 BRT (15:00 UTC)
+    - cron: '0 15 * * *' # <--- MUTAÇÃO AQUI
   workflow_dispatch:
+:
 
 jobs:
   update-nba-data:
