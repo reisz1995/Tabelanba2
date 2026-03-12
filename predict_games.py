@@ -1,24 +1,29 @@
 import os
 import json
 import time
-import random
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 from supabase import create_client
 from groq import Groq
 
+# ==========================================
+# 1. INICIALIZAÇÃO DE INFRAESTRUTURA
+# ==========================================
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
 if not all([SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, GROQ_API_KEY]):
-    print("❌ COLAPSO_DE_SISTEMA: Faltam variáveis.")
+    print("❌ COLAPSO_DE_SISTEMA: Faltam variáveis de ambiente.")
     exit(1)
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
+# ==========================================
+# 2. MOTORES DE EXTRAÇÃO E LIMPEZA
+# ==========================================
 class InjuryMonitor:
     def __init__(self, filepath):
         self.injuries = []
@@ -26,6 +31,32 @@ class InjuryMonitor:
             with open(filepath, 'r', encoding='utf-8') as f:
                 self.injuries = json.load(f)
 
+def extract_pure_json(raw_response):
+    """Remove a escória visual (Markdown) que a IA injeta no texto."""
+    clean_text = raw_response.strip()
+    if clean_text.startswith("```json"):
+        clean_text = clean_text[7:]
+    elif clean_text.startswith("```"):
+        clean_text = clean_text[3:]
+        
+    if clean_text.endswith("```"):
+        clean_text = clean_text[:-3]
+        
+    return clean_text.strip()
+
+def with_retry(func, retries=3):
+    """Motor de resiliência contra latência de rede."""
+    for attempt in range(retries + 1):
+        try:
+            return func()
+        except Exception as e:
+            if attempt == retries:
+                raise e
+            time.sleep(1.5)
+
+# ==========================================
+# 3. INTERFACES DE DADOS (ESPN & SUPABASE)
+# ==========================================
 def get_espn_games(date_obj):
     url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={date_obj.strftime('%Y%m%d')}"
     res = requests.get(url).json()
@@ -33,7 +64,8 @@ def get_espn_games(date_obj):
     for event in res.get('events', []):
         comps = event['competitions'][0]['competitors']
         games.append({
-            'id': event['id'], 'date': event['date'],
+            'id': event['id'], 
+            'date': event['date'],
             'home': next(c['team'] for c in comps if c['homeAway'] == 'home'),
             'away': next(c['team'] for c in comps if c['homeAway'] == 'away')
         })
@@ -49,14 +81,12 @@ def get_market_odds(home_full, away_full):
 def extract_h2h(team_id, opponent_id):
     url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/{team_id}/schedule"
     
-    # Isola a requisição para usar o motor de retentativas
     def fetch_schedule():
         res = requests.get(url, timeout=10)
-        res.raise_for_status() # Força um erro se a ESPN bloquear o acesso (HTTP 429/500)
+        res.raise_for_status() 
         return res.json().get('events', [])
 
     try:
-        # Se falhar, o with_retry espera e tenta novamente até 3 vezes
         events = with_retry(fetch_schedule, retries=3)
         if not events: return []
         
@@ -86,16 +116,12 @@ def extract_h2h(team_id, opponent_id):
             })
         return parsed
     except Exception as e:
-        print(f"⚠️ Colapso na extração H2H (Rede/API): {e}")
+        print(f"⚠️ Colapso na extração H2H: {e}")
         return []
-        
-def with_retry(func, retries=3):
-    for attempt in range(retries + 1):
-        try: return func()
-        except Exception as e:
-            if attempt == retries: raise e
-            time.sleep(1.5)
 
+# ==========================================
+# 4. MOTOR PREDITIVO (GROQ IA)
+# ==========================================
 SYSTEM_INSTRUCTION = """Você é o Estatístico Chefe do sistema NBA-MONITOR. Calcule o Edge.
 DIRETRIZES: Avalie ritmo, degradação térmica (lesões) e assimetria de mercado (Market_Odds). 
 SAÍDA OBRIGATÓRIA (JSON Estrito):
@@ -116,18 +142,31 @@ def analyze_game(game, inj, h2h):
     def call_groq():
         res = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=[{"role": "system", "content": SYSTEM_INSTRUCTION}, {"role": "user", "content": json.dumps(payload)}],
-            temperature=0.1, response_format={"type": "json_object"}
+            messages=[
+                {"role": "system", "content": SYSTEM_INSTRUCTION}, 
+                {"role": "user", "content": json.dumps(payload)}
+            ],
+            temperature=0.1, 
+            response_format={"type": "json_object"}
         )
-        return json.loads(res.choices[0].message.content)
+        raw_text = res.choices[0].message.content
+        clean_text = extract_pure_json(raw_text)
+        return json.loads(clean_text)
     
-    try: return with_retry(call_groq)
-    except Exception as e: print(f"❌ Erro IA: {e}"); return None
+    try: 
+        return with_retry(call_groq)
+    except Exception as e: 
+        print(f"❌ Erro IA ({home} vs {away}): {e}")
+        return None
 
-    # Substitua as linhas que definem o 'now' e o 'date_obj' por isto:
-date_obj = datetime.now(pytz.timezone('America/Sao_Paulo'))
-date_iso = date_obj.strftime("%Y-%m-%d")
-print(f"🕒 INICIANDO MOTOR PREDITIVO PARA A DATA: {date_iso}")
+# ==========================================
+# 5. EXECUÇÃO PRINCIPAL (MAIN)
+# ==========================================
+if __name__ == "__main__":
+    # GARANTIA TEMPORAL ABSOLUTA
+    date_obj = datetime.now(pytz.timezone('America/Sao_Paulo'))
+    date_iso = date_obj.strftime("%Y-%m-%d")
+    print(f"🕒 INICIANDO MOTOR PREDITIVO PARA A DATA: {date_iso}")
 
     inj_monitor = InjuryMonitor("nba_injuries.json")
     games = get_espn_games(date_obj)
@@ -144,7 +183,10 @@ print(f"🕒 INICIANDO MOTOR PREDITIVO PARA A DATA: {date_iso}")
         ai_result = analyze_game(game, inj_monitor.injuries, h2h_data)
         if ai_result:
             predictions.append({
-                "id": game_id, "date": date_iso, "home_team": home_full, "away_team": away_full,
+                "id": game_id, 
+                "date": date_iso, 
+                "home_team": home_full, 
+                "away_team": away_full,
                 "prediction": json.dumps(ai_result, ensure_ascii=False),
                 "main_pick": ai_result.get("palpite_principal", "N/A"),
                 "confidence": float(ai_result.get("confianca", 0.0)),
@@ -154,9 +196,20 @@ print(f"🕒 INICIANDO MOTOR PREDITIVO PARA A DATA: {date_iso}")
                 "key_factor": ai_result.get("keyFactor", ""),
                 "momentum_data": h2h_data
             })
-        time.sleep(1.5)
+        time.sleep(1.5) # Respeita o Rate Limit da IA
 
-    if predictions:
+    # MOTOR DE PÂNICO E INJEÇÃO
+    if not predictions:
+        print("⚠️ ALERTA CRÍTICO: Zero predições geradas. Possível falha na API da ESPN (Sem jogos) ou na API do Groq (Rate Limit/Parse Error).")
+        exit(1) # OBRIGA o GitHub Actions a acionar luz vermelha.
+
+    print(f"📦 Empacotando {len(predictions)} matrizes preditivas para injeção no Supabase...")
+    
+    try:
         supabase.table("game_predictions").upsert(predictions).execute()
-        print("✅ Matriz selada.")
-        
+        print("✅ SUCESSO ABSOLUTO: Matrizes termodinâmicas injetadas na tabela 'game_predictions'.")
+    except Exception as e:
+        print(f"❌ COLAPSO NO BANCO DE DADOS: A estrutura enviada foi rejeitada pelo Supabase.")
+        print(f"MOTIVO: {e}")
+        exit(1) # OBRIGA o GitHub Actions a acionar luz vermelha.
+                            
