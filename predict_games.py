@@ -13,7 +13,7 @@ SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
 if not all([SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, GROQ_API_KEY]):
-    print("âŒ COLAPSO_DE_SISTEMA: Faltam variÃ¡veis.")
+    print("❌ COLAPSO_DE_SISTEMA: Faltam variáveis.")
     exit(1)
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
@@ -44,19 +44,19 @@ def get_market_odds(home_full, away_full):
     for row in res.data:
         if home_full in row.get("matchup", "") or away_full in row.get("matchup", ""):
             return row
-    return "Mercado IndisponÃ­vel"
+    return "Mercado Indisponível"
 
 def extract_h2h(team_id, opponent_id):
     url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/{team_id}/schedule"
     
-    # Isola a requisiÃ§Ã£o para usar o motor de retentativas
+    # Isola a requisição para usar o motor de retentativas
     def fetch_schedule():
         res = requests.get(url, timeout=10)
-        res.raise_for_status() # ForÃ§a um erro se a ESPN bloquear o acesso (HTTP 429/500)
+        res.raise_for_status() # Força um erro se a ESPN bloquear o acesso (HTTP 429/500)
         return res.json().get('events', [])
 
     try:
-        # Se falhar, o with_retry espera e tenta novamente atÃ© 3 vezes
+        # Se falhar, o with_retry espera e tenta novamente até 3 vezes
         events = with_retry(fetch_schedule, retries=3)
         if not events: return []
         
@@ -86,7 +86,7 @@ def extract_h2h(team_id, opponent_id):
             })
         return parsed
     except Exception as e:
-        print(f"âš ï¸ Colapso na extraÃ§Ã£o H2H (Rede/API): {e}")
+        print(f"⚠️ Colapso na extração H2H (Rede/API): {e}")
         return []
         
 def with_retry(func, retries=3):
@@ -96,9 +96,9 @@ def with_retry(func, retries=3):
             if attempt == retries: raise e
             time.sleep(1.5)
 
-SYSTEM_INSTRUCTION = """VocÃª Ã© o EstatÃ­stico Chefe do sistema NBA-MONITOR. Calcule o Edge.
-DIRETRIZES: Avalie ritmo, degradaÃ§Ã£o tÃ©rmica (lesÃµes) e assimetria de mercado (Market_Odds). 
-SAÃDA OBRIGATÃ“RIA (JSON Estrito):
+SYSTEM_INSTRUCTION = """Você é o Estatístico Chefe do sistema NBA-MONITOR. Calcule o Edge.
+DIRETRIZES: Avalie ritmo, degradação térmica (lesões) e assimetria de mercado (Market_Odds). 
+SAÍDA OBRIGATÓRIA (JSON Estrito):
 {"palpite_principal": "string", "confianca": 0.0, "linha_seguranca_over": "string", "linha_seguranca_under": "string", "alerta_lesao": "string", "keyFactor": "string", "detailedAnalysis": "string"}"""
 
 def analyze_game(game, inj, h2h):
@@ -122,13 +122,11 @@ def analyze_game(game, inj, h2h):
         return json.loads(res.choices[0].message.content)
     
     try: return with_retry(call_groq)
-    except Exception as e: print(f"âŒ Erro IA: {e}"); return None
+    except Exception as e: print(f"❌ Erro IA: {e}"); return None
 
-if __name__ == "__main__":
-    now = datetime.now(pytz.timezone('America/Sao_Paulo'))
-    date_obj = now - timedelta(days=1) if now.hour < 10 else now
+    date_obj = datetime.now(pytz.timezone('America/Sao_Paulo'))
     date_iso = date_obj.strftime("%Y-%m-%d")
-    
+
     inj_monitor = InjuryMonitor("nba_injuries.json")
     games = get_espn_games(date_obj)
     predictions = []
@@ -138,7 +136,7 @@ if __name__ == "__main__":
         away_full = game['away']['displayName']
         game_id = f"{date_iso}_{home_full}_{away_full}".replace(" ", "_")
         
-        print(f"âš¡ Processando colisÃ£o: {home_full} vs {away_full}")
+        print(f"⚡ Processando colisão: {home_full} vs {away_full}")
         h2h_data = {"home_vs_away": extract_h2h(game['home']['id'], game['away']['id'])}
         
         ai_result = analyze_game(game, inj_monitor.injuries, h2h_data)
@@ -150,7 +148,7 @@ if __name__ == "__main__":
                 "confidence": float(ai_result.get("confianca", 0.0)),
                 "over_line": ai_result.get("linha_seguranca_over", ""),
                 "under_line": ai_result.get("linha_seguranca_under", ""),
-                "injury_alert": ai_result.get("alerta_lesao", "NÃ£o"),
+                "injury_alert": ai_result.get("alerta_lesao", "Não"),
                 "key_factor": ai_result.get("keyFactor", ""),
                 "momentum_data": h2h_data
             })
@@ -158,4 +156,5 @@ if __name__ == "__main__":
 
     if predictions:
         supabase.table("game_predictions").upsert(predictions).execute()
-        print("âœ… Matriz selada.")
+        print("✅ Matriz selada.")
+        
