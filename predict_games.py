@@ -118,7 +118,7 @@ def analyze_game(game, inj, h2h):
     
     def call_ai_studio():
         model = genai.GenerativeModel(
-            model_name="gemini-3-flash_preview",
+            model_name="gemini-3-flash-preview",
             system_instruction=SYSTEM_INSTRUCTION,
             generation_config={
                 "response_mime_type": "application/json",
