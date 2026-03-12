@@ -124,8 +124,10 @@ def analyze_game(game, inj, h2h):
     try: return with_retry(call_groq)
     except Exception as e: print(f"❌ Erro IA: {e}"); return None
 
-    date_obj = datetime.now(pytz.timezone('America/Sao_Paulo'))
-    date_iso = date_obj.strftime("%Y-%m-%d")
+    # Substitua as linhas que definem o 'now' e o 'date_obj' por isto:
+date_obj = datetime.now(pytz.timezone('America/Sao_Paulo'))
+date_iso = date_obj.strftime("%Y-%m-%d")
+print(f"🕒 INICIANDO MOTOR PREDITIVO PARA A DATA: {date_iso}")
 
     inj_monitor = InjuryMonitor("nba_injuries.json")
     games = get_espn_games(date_obj)
