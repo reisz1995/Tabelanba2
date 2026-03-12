@@ -56,31 +56,6 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY || secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_SERVICE_KEY }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-        run: python predict_games.py
-        
-      # --- FASE 2: PYTHON (ESTATÍSTICO CHEFE & LESÕES) ---
-      - name: 🐍 SETUP PYTHON
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-          cache: 'pip'
-          
-      - name: 📦 INSTALL PYTHON DEPENDENCIES
-        run: pip install requests supabase groq pytz
-
-      - name: 🏥 FETCH INJURIES
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY || secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: python nba_injuries_api.py
-
-      - name: 🔮 GENERATE PREDICTIONS
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          # INJEÇÃO DUPLA: Blinda o predict_games.py contra falhas de nomenclatura
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY || secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_SERVICE_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python predict_games.py
         
