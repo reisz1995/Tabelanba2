@@ -10,14 +10,14 @@ import google.generativeai as genai
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
-if not all([SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, GEMINI_API_KEY]):
+if not all([SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, GROQ_API_KEY]):
     print("❌ COLAPSO_DE_SISTEMA: Faltam variáveis de ambiente críticas.")
     exit(1)
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-genai.configure(api_key=GEMINI_API_KEY)
+genai.configure(api_key=GROQ_API_KEY)
 
 class InjuryMonitor:
     def __init__(self, filepath):
@@ -118,7 +118,7 @@ def analyze_game(game, inj, h2h):
     
     def call_ai_studio():
         model = genai.GenerativeModel(
-            model_name="gemini-3-flash-preview",
+            model_name="gemini-3-flash_preview",
             system_instruction=SYSTEM_INSTRUCTION,
             generation_config={
                 "response_mime_type": "application/json",
@@ -175,3 +175,4 @@ if __name__ == "__main__":
     if predictions:
         supabase.table("game_predictions").upsert(predictions).execute()
         print("✅ Matriz de predições selada no banco de dados.")
+        
