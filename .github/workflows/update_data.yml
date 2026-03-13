@@ -1,4 +1,4 @@
-name: : ATUALIZAÇÃO DIÁRIA DA NBA (V4)
+name: ATUALIZAÇÃO DIÁRIA DA NBA (V4)
 
 on:
   schedule:
