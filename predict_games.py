@@ -450,10 +450,7 @@ if __name__ == "__main__":
                 "handicap_line": ai_result.get("handicap_recomendado", ""),
                 "injury_alert": ai_result.get("alerta_lesao", "Não"),
                 "key_factor": ai_result.get("keyFactor", ""),
-                "momentum_data": {
-                    "home": home_momentum,
-                    "away": away_momentum
-                },
+                "momentum_data": h2h_data, # <--- RESTAURAÇÃO: Apenas os confrontos diretos
                 "defense_data": {
                     "home_def_rating": home_defense.get('defensive_rating'),
                     "away_def_rating": away_defense.get('defensive_rating')
