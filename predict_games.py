@@ -1,7 +1,5 @@
 
-# Criar o arquivo atualizado com todas as instruções de betting
-
-updated_content = '''import os
+import os
 import json
 import time
 import requests
