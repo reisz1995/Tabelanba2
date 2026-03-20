@@ -23,6 +23,8 @@ def load_injuries() -> List[Dict[str, Any]]:
             return json.load(f)
     except FileNotFoundError:
         return []
+    except json.JSONDecodeError:
+        return []
 
 
 @app.route('/')
@@ -53,6 +55,9 @@ def get_all_injuries():
     """
     injuries = load_injuries()
     limit = request.args.get('limit', 100, type=int)
+    if limit is None:
+        limit = 100
+    limit = max(1, limit)
     
     return jsonify({
         'success': True,
@@ -95,7 +100,7 @@ def get_injury_by_player(player_id: str):
     injuries = load_injuries()
     player_injuries = [
         injury for injury in injuries 
-        if injury.get('player_id') == player_id
+        if str(injury.get('player_id', '')) == str(player_id)
     ]
     
     if player_injuries:
