@@ -151,29 +151,78 @@ def get_team_stats(team_id):
 
 def get_team_defense_metrics(team_id):
     """Busca métricas defensivas e de pace do time."""
+    def normalize_metric_value(raw_value):
+        """Converte valores da API (string/number) para float quando possível."""
+        if raw_value is None:
+            return None
+        if isinstance(raw_value, (int, float)):
+            return float(raw_value)
+        if isinstance(raw_value, str):
+            cleaned = raw_value.strip().replace(",", ".")
+            if not cleaned:
+                return None
+            try:
+                return float(cleaned)
+            except ValueError:
+                return None
+        return None
+
+    def iter_stats_objects(payload):
+        """
+        Caminha recursivamente pelo payload e retorna qualquer lista de stats encontrada.
+        Isso evita quebra quando a ESPN altera o shape do JSON.
+        """
+        if isinstance(payload, dict):
+            for key, value in payload.items():
+                if key == "stats" and isinstance(value, list):
+                    yield from value
+                else:
+                    yield from iter_stats_objects(value)
+        elif isinstance(payload, list):
+            for item in payload:
+                yield from iter_stats_objects(item)
+
+    def match_stat_name(stat):
+        name = str(stat.get('name', '')).lower().strip()
+        display_name = str(stat.get('displayName', '')).lower().strip()
+        short_display_name = str(stat.get('shortDisplayName', '')).lower().strip()
+        summary = " ".join([name, display_name, short_display_name])
+
+        if "defensive" in summary and "rating" in summary:
+            return "defensive_rating"
+        if "pace" in summary:
+            return "pace"
+        if "points allowed" in summary or "opp points" in summary or "opponent points" in summary:
+            return "points_allowed"
+        return None
+
     try:
         # ESPN API para estatísticas do time
         url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/{team_id}/statistics"
         res = requests.get(url, timeout=10)
         
         if res.status_code != 200:
+            print(f"⚠️ Endpoint de estatísticas retornou status {res.status_code} para team_id={team_id}")
             return {'defensive_rating': None, 'pace': None, 'points_allowed': None}
         
         data = res.json()
-        stats = data.get('results', {}).get('stats', [])
-        
-        defensive_rating = None
-        pace = None
-        points_allowed = None
-        
-        for stat in stats:
-            name = stat.get('name', '').lower()
-            if 'defensive' in name and 'rating' in name:
-                defensive_rating = stat.get('value')
-            elif 'pace' in name:
-                pace = stat.get('value')
-            elif 'points allowed' in name or 'opp points' in name:
-                points_allowed = stat.get('value')
+        defensive_rating, pace, points_allowed = None, None, None
+
+        for stat in iter_stats_objects(data):
+            metric_name = match_stat_name(stat)
+            if not metric_name:
+                continue
+
+            metric_value = normalize_metric_value(
+                stat.get('value', stat.get('displayValue'))
+            )
+
+            if metric_name == "defensive_rating" and defensive_rating is None:
+                defensive_rating = metric_value
+            elif metric_name == "pace" and pace is None:
+                pace = metric_value
+            elif metric_name == "points_allowed" and points_allowed is None:
+                points_allowed = metric_value
         
         return {
             'defensive_rating': defensive_rating,
