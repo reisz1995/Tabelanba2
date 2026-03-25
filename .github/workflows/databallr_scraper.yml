@@ -18,11 +18,11 @@ on:
 env:
   PYTHON_VERSION: '3.11'
   SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-  SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+  # [CORREÇÃO] Mudando de SUPABASE_KEY para SUPABASE_SERVICE_KEY
+  SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }} 
   DATABALLR_SEASON: '2025-26'
-  # [FIX] Força a execução no Node 24, resolvendo os avisos de depreciação
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true' 
-
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+  
 permissions:
   contents: read
   issues: write
