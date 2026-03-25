@@ -2,7 +2,7 @@ name: Databallr Scraper - Last 14 Days
 
 on:
   schedule:
-    - cron: '0 6 * * *' # 06:00 UTC (03:00 BRT)
+    - cron: '0 6 * * *'
   workflow_dispatch:
     inputs:
       period:
@@ -20,36 +20,79 @@ env:
   SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
   SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
   DATABALLR_SEASON: '2025-26'
+  # [FIX] Força a execução no Node 24, resolvendo os avisos de depreciação
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true' 
 
-# Declaração explícita de permissões para garantir a criação da issue
 permissions:
   contents: read
   issues: write
 
 jobs:
   scrape-databallr:
-    # [SYS-OP] Diretiva 'if: ${{ secrets... }}' REMOVIDA. 
-    # A validação de credenciais foi delegada para a camada Python.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        
-      # ... (resto do código permanece inalterado)
-
-  validate-data:
-    # [SYS-OP] Diretiva 'if: ${{ secrets... }}' REMOVIDA aqui também.
-    needs: scrape-databallr
-    runs-on: ubuntu-latest
-    
-    steps:
+      
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: 'pip'
+          # [FIX] cache: 'pip' removido para evitar colapso sem requirements.txt
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas requests supabase python-dotenv
+      
+      - name: Run Databallr Scraper
+        id: scraper
+        env:
+          DATABALLR_PERIOD: ${{ github.event.inputs.period || 'last14' }}
+        run: python scraper_databallr.py
+      
+      - name: Upload logs artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scraper-logs-${{ github.run_id }}
+          path: |
+            *.log
+            execution_summary.json
+          retention-days: 7
+      
+      - name: Notify on failure
+        if: failure()
+        uses: actions/github-script@v7
+        continue-on-error: true
+        with:
+          script: |
+            try {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `🚨 Falha Crítica de Scraper (Databallr) - ${new Date().toISOString()}`,
+                body: `Anomalia detectada no fluxo de extração. Run ID: #${{ github.run_id }}.\n\nRevisar logs de telemetria imediatamente.`,
+                labels: ['bug', 'data-pipeline', 'automated']
+              });
+            } catch (error) {
+              core.warning(`Falha de interface ao reportar anomalia: ${error.message}`);
+            }
+
+  validate-data:
+    needs: scrape-databallr
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
       
       - name: Install dependencies
         run: pip install supabase pandas
@@ -64,7 +107,6 @@ jobs:
 
           supabase = create_client(os.environ['SUPABASE_URL'], os.environ['SUPABASE_KEY'])
 
-          # Ajuste lógico: Forçar GMT-3 se o banco de dados registrar data local
           brt_timezone = timezone(timedelta(hours=-3))
           today = datetime.now(brt_timezone).date().isoformat()
           
@@ -88,11 +130,13 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: 'pip'
       
       - name: Install dependencies
         run: pip install supabase pandas
