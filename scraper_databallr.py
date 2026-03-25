@@ -64,17 +64,29 @@ class DataballrScraper:
         self.supabase: Client = create_client(supabase_url, supabase_key)
 
     def fetch_team_stats(self) -> pd.DataFrame:
-        """Extração vetorial das estatísticas principais."""
+        """Extração com interceptação de payload para debug."""
         logger.info(f"[NET-FETCH] Iniciando varredura (Stats) - Período: {self.period_label}")
         url = f"{self.base_url}/api/team-stats"
         params = {'season': self.season, 'period': self.period, 'type': 'per100'}
         
         try:
             response = self.session.get(url, params=params, timeout=15)
-            response.raise_for_status()
-            teams = response.json().get('teams', [])
             
-            # List Comprehension para eficiência de CPU
+            # [DEBUG HUD] Log do conteúdo se não for JSON
+            if "application/json" not in response.headers.get("Content-Type", "").lower():
+                logger.error(f"[NET-ERR] Resposta inesperada (Status {response.status_code})")
+                logger.error(f"[NET-DATA] Primeiros 200 caracteres: {response.text[:200]}")
+                return pd.DataFrame()
+
+            response.raise_for_status()
+            data = response.json()
+            teams = data.get('teams', [])
+            
+            if not teams:
+                logger.warning("[NET-WARN] API retornou lista de times vazia.")
+                return pd.DataFrame()
+
+            # Processamento vetorial
             teams_data = [{
                 'team_id': t.get('teamId'),
                 'team_name': t.get('teamName'),
@@ -97,13 +109,12 @@ class DataballrScraper:
                 'created_at': self.current_timestamp
             } for t in teams]
             
-            df = pd.DataFrame(teams_data)
-            logger.info(f"[SYS-OP] Parse concluído: {len(df)} vetores processados.")
-            return df
+            return pd.DataFrame(teams_data)
             
-        except requests.RequestException as e:
-            logger.error(f"[NET-ERR] Falha de conexão na malha de dados: {e}")
+        except Exception as e:
+            logger.error(f"[NET-ERR] Erro na malha de dados: {str(e)}")
             return pd.DataFrame()
+
 
     def fetch_advanced_metrics(self) -> pd.DataFrame:
         """Extração vetorial das métricas avançadas (Shot Profile)."""
