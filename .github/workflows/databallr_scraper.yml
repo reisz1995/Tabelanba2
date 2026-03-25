@@ -12,11 +12,9 @@ on:
         type: choice
         options: [last14, last30, full_season]
 
+# [SYS-OP] Variáveis públicas e seguras ficam no escopo Global
 env:
   PYTHON_VERSION: '3.11'
-  SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-  # Mapeamento redundante para segredos
-  SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY || secrets.SUPABASE_KEY }}
   DATABALLR_SEASON: '2025-26'
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
@@ -28,6 +26,11 @@ jobs:
   scrape-and-sync:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    
+    # [CORREÇÃO] Variáveis sigilosas descem para o escopo do Job
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY || secrets.SUPABASE_KEY }}
     
     steps:
       - name: 📥 [INIT] Checkout
