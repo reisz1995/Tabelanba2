@@ -2,10 +2,7 @@ name: Databallr Scraper - Last 14 Days
 
 on:
   schedule:
-    # Executar todos os dias às 6h da manhã UTC (3h da manhã no Brasil)
-    - cron: '0 6 * * *'
-  
-  # Permitir execução manual
+    - cron: '0 6 * * *' # 06:00 UTC (03:00 BRT)
   workflow_dispatch:
     inputs:
       period:
@@ -23,6 +20,11 @@ env:
   SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
   SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
   DATABALLR_SEASON: '2025-26'
+
+# Declaração explícita de permissões para garantir a criação da issue
+permissions:
+  contents: read
+  issues: write
 
 jobs:
   scrape-databallr:
@@ -71,105 +73,109 @@ jobs:
               await github.rest.issues.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                title: `🚨 Falha no Scraper Databallr - ${new Date().toISOString()}`,
-                body: `O scraper do Databallr falhou na execução #${{ github.run_id }}. Verifique os logs para mais detalhes.`,
+                title: `🚨 Falha Crítica de Scraper (Databallr) - ${new Date().toISOString()}`,
+                body: `Anomalia detectada no fluxo de extração. Run ID: #${{ github.run_id }}.\n\nRevisar logs de telemetria imediatamente.`,
                 labels: ['bug', 'data-pipeline', 'automated']
               });
             } catch (error) {
-              core.warning(`Não foi possível abrir issue automaticamente: ${error.message}`);
+              core.warning(`Falha de interface ao reportar anomalia: ${error.message}`);
             }
 
   validate-data:
-    if: ${{ secrets.SUPABASE_URL != '' && secrets.SUPABASE_KEY != '' }}
     needs: scrape-databallr
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
       
       - name: Install dependencies
         run: pip install supabase pandas
       
       - name: Validate data quality
         run: |
-          python -c "
+          cat << 'EOF' > validate.py
           import os
-          from supabase import create_client
           import sys
-          
+          from datetime import datetime, timezone, timedelta
+          from supabase import create_client
+
           supabase = create_client(os.environ['SUPABASE_URL'], os.environ['SUPABASE_KEY'])
+
+          # Ajuste lógico: Forçar GMT-3 se o banco de dados registrar data local
+          brt_timezone = timezone(timedelta(hours=-3))
+          today = datetime.now(brt_timezone).date().isoformat()
           
-          # Verificar se há dados do dia
-          today = __import__('datetime').date.today().isoformat()
           result = supabase.table('databallr_team_stats').select('*').eq('record_date', today).execute()
           
-          if len(result.data) == 0:
-              print('❌ ERRO: Nenhum dado encontrado para hoje!')
+          record_count = len(result.data)
+          if record_count == 0:
+              print(f"❌ [CRÍTICO] Perda de integridade: 0 registros encontrados para {today}.")
               sys.exit(1)
           
-          if len(result.data) < 30:
-              print(f'⚠️ AVISO: Apenas {len(result.data)} registros encontrados (esperado: 30)')
-          
-          print(f'✅ Validação OK: {len(result.data)} times processados')
-          "
+          if record_count < 30:
+              print(f"⚠️ [AVISO] Inconsistência de volume: {record_count}/30 registros encontrados.")
+          else:
+              print(f"✅ [ESTÁVEL] Validação aprovada: {record_count} vetores sincronizados.")
+          EOF
+          python validate.py
 
   generate-report:
-    if: ${{ success() && secrets.SUPABASE_URL != '' && secrets.SUPABASE_KEY != '' }}
+    if: ${{ success() }}
     needs: [scrape-databallr, validate-data]
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: pip install supabase pandas
       
       - name: Generate daily report
         run: |
-          python -c "
+          cat << 'EOF' > generate_report.py
           import os
-          from supabase import create_client
           import json
           from datetime import datetime, timedelta
-          
+          from supabase import create_client
+
           supabase = create_client(os.environ['SUPABASE_URL'], os.environ['SUPABASE_KEY'])
-          
-          # Buscar dados dos últimos 14 dias
+
           fourteen_days_ago = (datetime.now() - timedelta(days=14)).date().isoformat()
           
-          result = supabase.table('databallr_team_stats')\\
-              .select('*')\\
-              .gte('record_date', fourteen_days_ago)\\
-              .order('net_rating', desc=True)\\
-              .limit(10)\\
+          result = supabase.table('databallr_team_stats')\
+              .select('*')\
+              .gte('record_date', fourteen_days_ago)\
+              .order('net_rating', desc=True)\
+              .limit(10)\
               .execute()
           
           top_teams = result.data
+          display_limit = min(5, len(top_teams))
           
           report = {
               'generated_at': datetime.now().isoformat(),
               'period': 'last_14_days',
-              'top_5_teams': top_teams[:5],
-              'total_teams': len(top_teams)
+              'top_teams_sample': top_teams[:display_limit],
+              'total_teams_processed': len(top_teams)
           }
           
           with open('daily_report.json', 'w') as f:
               json.dump(report, f, indent=2, default=str)
           
-          print('📊 Relatório gerado com sucesso!')
-          print(f'Top 5 times (Net Rating):')
-          for i, team in enumerate(top_teams[:5], 1):
-              print(f'{i}. {team[\\\"team_name\\\"]}: {team[\\\"net_rating\\\"]:+.1f}')
-          "
+          print("📊 Renderização de HUD Relatório:")
+          print("---------------------------------")
+          for i, team in enumerate(top_teams[:display_limit], 1):
+              print(f"{i:02d}. {team['team_name'].ljust(20)} | NR: {team['net_rating']:+.1f}")
+          EOF
+          python generate_report.py
       
       - name: Upload report
         uses: actions/upload-artifact@v4
@@ -177,3 +183,4 @@ jobs:
           name: daily-report-${{ github.run_id }}
           path: daily_report.json
           retention-days: 30
+          
