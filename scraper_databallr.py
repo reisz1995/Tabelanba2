@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
 """
-Scraper para databallr.com - Estatísticas dos últimos 14 dias
-Integração com Supabase para pipeline de dados NBA
+Módulo Extrator [Databallr -> Supabase]
+Especificação: Alta Performance, Tolerância a Falhas, Parsing Vetorizado.
 """
 
 import os
 import json
-import requests
-import pandas as pd
-from datetime import datetime
-from supabase import create_client, Client
 import logging
+from datetime import datetime, timezone
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+import pandas as pd
+from supabase import create_client, Client
 
-# Configuração de logging
+# Configuração de Telemetria (HUD)
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    format='%(asctime)s | %(levelname)-8s | %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
 
@@ -28,229 +31,193 @@ class DataballrScraper:
 
     def __init__(self, period: str = "last14", season: str = "2025-26"):
         self.base_url = "https://databallr.com"
+        
         if period not in self.PERIOD_MAP:
-            raise ValueError(f"Período inválido: {period}. Use um de: {', '.join(self.PERIOD_MAP.keys())}")
+            raise ValueError(f"[SYS-ERR] Período inválido: {period}.")
+            
         self.period = period
         self.period_label = self.PERIOD_MAP[period]
         self.season = season
+        
+        # Ancoragem Temporal Determinística O(1)
+        now_utc = datetime.now(timezone.utc)
+        self.current_date = now_utc.date().isoformat()
+        self.current_timestamp = now_utc.isoformat()
+        
+        # Configuração de Rede: Tolerância a Falhas (Retry Protocol)
         self.session = requests.Session()
+        retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+        self.session.mount('https://', HTTPAdapter(max_retries=retries))
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'application/json, text/plain, */*',
-            'Accept-Language': 'en-US,en;q=0.9',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json',
             'Referer': 'https://databallr.com/stats'
         })
         
-        # Inicializar Supabase
+        # Inicialização do Banco de Dados
         supabase_url = os.environ.get("SUPABASE_URL")
         supabase_key = os.environ.get("SUPABASE_KEY")
         
         if not supabase_url or not supabase_key:
-            raise ValueError("SUPABASE_URL e SUPABASE_KEY devem estar definidos nas variáveis de ambiente")
-        
+            raise EnvironmentError("[SYS-ERR] Credenciais Supabase ausentes no ambiente.")
+            
         self.supabase: Client = create_client(supabase_url, supabase_key)
-        
-    def fetch_team_stats_last_14_days(self) -> pd.DataFrame:
-        """
-        Busca estatísticas dos times dos últimos 14 dias do databallr.com
-        """
-        logger.info("Buscando estatísticas dos últimos 14 dias...")
-        
-        # Endpoint para stats dos últimos 14 dias (Last 2 weeks)
+
+    def fetch_team_stats(self) -> pd.DataFrame:
+        """Extração vetorial das estatísticas principais."""
+        logger.info(f"[NET-FETCH] Iniciando varredura (Stats) - Período: {self.period_label}")
         url = f"{self.base_url}/api/team-stats"
-        
-        params = {
-            'season': self.season,
-            'period': self.period,
-            'type': 'per100'     # Per 100 possessions
-        }
+        params = {'season': self.season, 'period': self.period, 'type': 'per100'}
         
         try:
-            response = self.session.get(url, params=params, timeout=30)
+            response = self.session.get(url, params=params, timeout=15)
             response.raise_for_status()
-            data = response.json()
+            teams = response.json().get('teams', [])
             
-            # Processar dados
-            teams_data = []
-            for team in data.get('teams', []):
-                team_record = {
-                    'team_id': team.get('teamId'),
-                    'team_name': team.get('teamName'),
-                    'team_abbreviation': team.get('teamAbbr'),
-                    'ortg': team.get('oRtg'),
-                    'drtg': team.get('dRtg'),
-                    'net_rating': team.get('netRtg'),
-                    'offense_rating': team.get('offense'),
-                    'defense_rating': team.get('defense'),
-                    'o_ts': team.get('oTS'),      # Offense from shooting
-                    'o_tov': team.get('oTOV'),    # Offense from turnovers
-                    'orb': team.get('oORB'),      # Offensive rebounding
-                    'd_ts': team.get('dTS'),      # Defense from shooting
-                    'd_tov': team.get('dTOV'),    # Defense from turnovers
-                    'drb': team.get('dDRB'),      # Defensive rebounding
-                    'net_eff': team.get('netEff'),
-                    'net_poss': team.get('netPoss'),
-                    'record_date': datetime.now().date().isoformat(),
-                    'period': self.period_label,
-                    'created_at': datetime.now().isoformat()
-                }
-                teams_data.append(team_record)
+            # List Comprehension para eficiência de CPU
+            teams_data = [{
+                'team_id': t.get('teamId'),
+                'team_name': t.get('teamName'),
+                'team_abbreviation': t.get('teamAbbr'),
+                'ortg': t.get('oRtg'),
+                'drtg': t.get('dRtg'),
+                'net_rating': t.get('netRtg'),
+                'offense_rating': t.get('offense'),
+                'defense_rating': t.get('defense'),
+                'o_ts': t.get('oTS'),
+                'o_tov': t.get('oTOV'),
+                'orb': t.get('oORB'),
+                'd_ts': t.get('dTS'),
+                'd_tov': t.get('dTOV'),
+                'drb': t.get('dDRB'),
+                'net_eff': t.get('netEff'),
+                'net_poss': t.get('netPoss'),
+                'record_date': self.current_date,
+                'period': self.period_label,
+                'created_at': self.current_timestamp
+            } for t in teams]
             
             df = pd.DataFrame(teams_data)
-            logger.info(f"Dados obtidos para {len(df)} times")
+            logger.info(f"[SYS-OP] Parse concluído: {len(df)} vetores processados.")
             return df
             
         except requests.RequestException as e:
-            logger.error(f"Erro ao buscar dados: {e}")
-            # Retornar DataFrame vazio em caso de erro para não quebrar o pipeline
+            logger.error(f"[NET-ERR] Falha de conexão na malha de dados: {e}")
             return pd.DataFrame()
-    
+
     def fetch_advanced_metrics(self) -> pd.DataFrame:
-        """
-        Busca métricas avançadas adicionais (Shot Profile, etc.)
-        """
-        logger.info("Buscando métricas avançadas...")
-        
+        """Extração vetorial das métricas avançadas (Shot Profile)."""
+        logger.info("[NET-FETCH] Iniciando varredura (Advanced Metrics)")
         url = f"{self.base_url}/api/team-advanced"
-        
-        params = {
-            'season': self.season,
-            'period': self.period
-        }
+        params = {'season': self.season, 'period': self.period}
         
         try:
-            response = self.session.get(url, params=params, timeout=30)
+            response = self.session.get(url, params=params, timeout=15)
             response.raise_for_status()
-            data = response.json()
+            teams = response.json().get('teams', [])
             
-            advanced_data = []
-            for team in data.get('teams', []):
-                record = {
-                    'team_id': team.get('teamId'),
-                    'team_abbreviation': team.get('teamAbbr'),
-                    'rim_freq': team.get('rimFreq'),
-                    'rim_fg_pct': team.get('rimFgPct'),
-                    'mid_freq': team.get('midFreq'),
-                    'mid_fg_pct': team.get('midFgPct'),
-                    'three_freq': team.get('threeFreq'),
-                    'three_pct': team.get('threePct'),
-                    'def_rim_freq': team.get('defRimFreq'),
-                    'def_rim_fg_pct': team.get('defRimFgPct'),
-                    'team_ts_pct': team.get('teamTsPct'),
-                    'opp_ts_pct': team.get('oppTsPct'),
-                    'pace': team.get('pace'),
-                    'record_date': datetime.now().date().isoformat(),
-                    'period': self.period_label,
-                    'created_at': datetime.now().isoformat()
-                }
-                advanced_data.append(record)
+            advanced_data = [{
+                'team_id': t.get('teamId'),
+                'team_abbreviation': t.get('teamAbbr'),
+                'rim_freq': t.get('rimFreq'),
+                'rim_fg_pct': t.get('rimFgPct'),
+                'mid_freq': t.get('midFreq'),
+                'mid_fg_pct': t.get('midFgPct'),
+                'three_freq': t.get('threeFreq'),
+                'three_pct': t.get('threePct'),
+                'def_rim_freq': t.get('defRimFreq'),
+                'def_rim_fg_pct': t.get('defRimFgPct'),
+                'team_ts_pct': t.get('teamTsPct'),
+                'opp_ts_pct': t.get('oppTsPct'),
+                'pace': t.get('pace'),
+                'record_date': self.current_date,
+                'period': self.period_label,
+                'created_at': self.current_timestamp
+            } for t in teams]
             
             return pd.DataFrame(advanced_data)
             
         except requests.RequestException as e:
-            logger.error(f"Erro ao buscar métricas avançadas: {e}")
+            logger.error(f"[NET-ERR] Falha na extração de métricas avançadas: {e}")
             return pd.DataFrame()
-    
+
     def save_to_supabase(self, df: pd.DataFrame, table_name: str):
-        """
-        Salva DataFrame no Supabase
-        """
+        """Injeção de dados no Supabase via Upsert."""
         if df.empty:
-            logger.warning(f"DataFrame vazio, nada para salvar em {table_name}")
+            logger.warning(f"[SYS-WARN] Matriz vazia. Ignorando injeção em {table_name}.")
             return
-        
-        logger.info(f"Salvando {len(df)} registros na tabela {table_name}...")
-        
-        # Converter DataFrame para lista de dicionários
+            
+        logger.info(f"[DB-SYNC] Sincronizando {len(df)} registros -> {table_name}")
         records = df.to_dict('records')
         
-        # Upsert (inserir ou atualizar) baseado no team_id e record_date
         try:
             response = self.supabase.table(table_name).upsert(
                 records,
                 on_conflict='team_id,record_date,period'
             ).execute()
-            
-            logger.info(f"Dados salvos com sucesso: {len(response.data)} registros")
-            
+            logger.info(f"[DB-SYNC] Transação confirmada. {len(response.data)} linhas afetadas.")
         except Exception as e:
-            logger.error(f"Erro ao salvar no Supabase: {e}")
+            logger.error(f"[DB-ERR] Falha na camada de persistência: {e}")
             raise
-    
+
     def validate_data(self, df: pd.DataFrame) -> bool:
-        """
-        Validação de qualidade dos dados
-        """
+        """Validação lógica matemática e integridade estrutural."""
         if df.empty:
-            logger.error("DataFrame está vazio!")
+            logger.error("[VAL-ERR] Matriz de dados vazia. Abortando pipeline.")
             return False
-        
-        required_columns = ['team_id', 'team_name', 'ortg', 'drtg', 'net_rating']
-        missing_cols = [col for col in required_columns if col not in df.columns]
+            
+        required_columns = {'team_id', 'team_name', 'ortg', 'drtg', 'net_rating'}
+        missing_cols = required_columns - set(df.columns)
         
         if missing_cols:
-            logger.error(f"Colunas obrigatórias faltando: {missing_cols}")
+            logger.error(f"[VAL-ERR] Integridade estrutural corrompida. Faltam colunas: {missing_cols}")
             return False
-        
-        # Verificar valores nulos críticos
-        null_counts = df[['team_id', 'ortg', 'drtg']].isnull().sum()
-        if null_counts.any():
-            logger.warning(f"Valores nulos encontrados: {null_counts.to_dict()}")
-        
-        # Verificar range de ratings (geralmente entre 90-130)
-        if not df['ortg'].between(80, 140).all():
-            logger.warning("Valores de ORTG fora do range esperado")
-        
-        logger.info("Validação concluída com sucesso")
+            
+        if df[['team_id', 'ortg', 'drtg']].isnull().any().any():
+            logger.warning("[VAL-WARN] Detectada anomalia de nulidade em colunas críticas.")
+            
+        if not df['ortg'].between(70, 150).all():
+            logger.warning("[VAL-WARN] Dispersão atípica: ORTG fora do limite estatístico (70-150).")
+            
+        logger.info("[VAL-OK] Validação estrutural aprovada.")
         return True
-    
+
     def run(self):
-        """
-        Executa o pipeline completo
-        """
-        logger.info("=" * 50)
-        logger.info(f"Iniciando scraper do Databallr - Período: {self.period_label}")
-        logger.info("=" * 50)
+        """Sequência principal de execução do pipeline."""
+        logger.info("=" * 60)
+        logger.info(f" INIT PIPELINE DATABALLR | ALVO: {self.period_label} | {self.current_timestamp}")
+        logger.info("=" * 60)
         
-        # 1. Buscar estatísticas básicas
-        df_stats = self.fetch_team_stats_last_14_days()
-        
+        df_stats = self.fetch_team_stats()
         if not self.validate_data(df_stats):
-            raise ValueError("Falha na validação dos dados")
-        
-        # 2. Salvar estatísticas básicas
+            raise ValueError("[SYS-ERR] Condição de parada atingida na validação primária.")
+            
         self.save_to_supabase(df_stats, 'databallr_team_stats')
         
-        # 3. Buscar e salvar métricas avançadas
         df_advanced = self.fetch_advanced_metrics()
-        if not df_advanced.empty:
-            self.save_to_supabase(df_advanced, 'databallr_advanced_metrics')
+        self.save_to_supabase(df_advanced, 'databallr_advanced_metrics')
         
-        # 4. Criar resumo
         summary = {
-            'execution_date': datetime.now().isoformat(),
+            'execution_date': self.current_timestamp,
             'teams_processed': len(df_stats),
             'period': self.period_label,
-            'avg_ortg': df_stats['ortg'].mean() if not df_stats.empty else None,
-            'avg_drtg': df_stats['drtg'].mean() if not df_stats.empty else None,
+            'avg_ortg': float(df_stats['ortg'].mean()) if not df_stats.empty else None,
+            'avg_drtg': float(df_stats['drtg'].mean()) if not df_stats.empty else None,
             'top_offense': df_stats.loc[df_stats['ortg'].idxmax(), 'team_name'] if not df_stats.empty else None,
-            'top_defense': df_stats.loc[df_stats['drtg'].idxmin(), 'team_name'] if not df_stats.empty else None
+            'top_defense': df_stats.loc[df_stats['drtg'].idxmin(), 'team_name'] if not df_stats.empty else None,
+            'status': 'SUCCESS'
         }
         
-        # Salvar log de execução
         self.supabase.table('databallr_execution_logs').insert(summary).execute()
         
-        logger.info("=" * 50)
-        logger.info("Pipeline concluído com sucesso!")
-        logger.info(f"Resumo: {json.dumps(summary, indent=2, default=str)}")
-        logger.info("=" * 50)
-
-        with open("execution_summary.json", "w", encoding="utf-8") as summary_file:
-            json.dump(summary, summary_file, indent=2, default=str, ensure_ascii=False)
-        logger.info("Arquivo execution_summary.json gerado com sucesso")
-        
+        with open("execution_summary.json", "w", encoding="utf-8") as f:
+            json.dump(summary, f, indent=2, ensure_ascii=False)
+            
+        logger.info("[SYS-OP] Arquivo de telemetria 'execution_summary.json' exportado.")
+        logger.info("=" * 60)
+        logger.info(" PIPELINE ENCERRADO COM SUCESSO ")
+        logger.info("=" * 60)
         return summary
-
 
 def main():
     period = os.getenv("DATABALLR_PERIOD", "last14")
@@ -258,6 +225,6 @@ def main():
     scraper = DataballrScraper(period=period, season=season)
     scraper.run()
 
-
 if __name__ == "__main__":
     main()
+            
