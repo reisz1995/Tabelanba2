@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-Módulo Extrator V2 [Databallr -> Supabase]
-Especificação: Web Scraping de HTML (Fallback de API), Alta Performance.
+Módulo Extrator NBA [Databallr -> Supabase]
+Versão: 3.0 (Next.js Hydration Engine)
+Estética: Replicante / Architect-Engineer
 """
 
 import os
-import re
 import json
 import logging
+import re
 from datetime import datetime, timezone
 import requests
 from requests.adapters import HTTPAdapter
@@ -16,7 +17,7 @@ import pandas as pd
 from bs4 import BeautifulSoup
 from supabase import create_client, Client
 
-# Configuração de Telemetria (HUD)
+# Configuração de Telemetria HUD
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s | %(levelname)-8s | %(message)s',
@@ -41,118 +42,107 @@ class DataballrScraper:
         self.current_date = now_utc.date().isoformat()
         self.current_timestamp = now_utc.isoformat()
         
-        # Configuração de Rede: Simulação de Navegador Real
+        # Configuração de Rede: Stealth Mode
         self.session = requests.Session()
         retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
         self.session.mount('https://', HTTPAdapter(max_retries=retries))
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Referer': f"{self.base_url}/stats",
-            'X-Requested-With': 'XMLHttpRequest'
+            'Referer': f"{self.base_url}/stats"
         })
         
-        # Injeção de Segredos
+        # Gatekeeper: Validação de Credenciais
         url = os.environ.get("SUPABASE_URL")
         key = os.environ.get("SUPABASE_SERVICE_KEY") or os.environ.get("SUPABASE_KEY")
         
         if not url or not key:
-            raise EnvironmentError("[SYS-ERR] Credenciais Supabase ausentes.")
+            raise EnvironmentError("[SYS-ERR] Credenciais Supabase não detectadas no ambiente.")
         self.supabase: Client = create_client(url, key)
 
-    def _clean_numeric(self, text: str) -> float:
-        """Limpa ruídos de texto (rankings, sinais, quebras) para conversão float."""
-        if not text or text.strip() == "-": return 0.0
-        # Remove rankings (#1), sinais de mais e espaços
-        clean = re.sub(r'#\d+|[+% \n\r]', '', text)
-        try:
-            return float(clean)
-        except ValueError:
-            return 0.0
-
     def fetch_team_stats(self) -> pd.DataFrame:
-        """Extração via Parsing DOM da tabela principal."""
-        logger.info(f"[NET-FETCH] Raspagem de HTML em curso: {self.base_url}/stats")
+        """Extrai dados estruturados do bloco de hidratação do Next.js."""
+        logger.info(f"[NET-FETCH] Alvo: {self.base_url}/stats | Motor: __NEXT_DATA__")
         
         try:
             response = self.session.get(f"{self.base_url}/stats", timeout=15)
             response.raise_for_status()
             
             soup = BeautifulSoup(response.text, 'lxml')
-            table = soup.find('table')
+            script_tag = soup.find('script', id='__NEXT_DATA__')
             
-            if not table:
-                logger.error("[VAL-ERR] Tabela não localizada no DOM.")
+            if not script_tag:
+                logger.error("[VAL-ERR] Bloco de hidratação ausente. Possível bloqueio Cloudflare.")
                 return pd.DataFrame()
 
-            rows = table.find_all('tr')[1:] # Skip Header
-            teams_data = []
+            payload = json.loads(script_tag.string)
+            
+            # Navegação na árvore de propriedades do Next.js
+            page_props = payload.get('props', {}).get('pageProps', {})
+            # Tenta múltiplos caminhos de resolução de dados
+            teams_list = page_props.get('teams') or page_props.get('initialData', {}).get('teams', [])
 
-            for row in rows:
-                cols = row.find_all('td')
-                if len(cols) < 5: continue
-                
-                # Extração de Metadados do Time
-                team_cell = cols[1]
-                img_tag = team_cell.find('img')
-                # Tenta capturar o ID do time via URL da logo (padrão NBA ID)
-                team_id_match = re.search(r'/(\d+)\.', img_tag['src']) if img_tag else None
-                team_id = int(team_id_match.group(1)) if team_id_match else 0
-                
-                name = team_cell.get_text(strip=True)
-                
-                teams_data.append({
-                    'team_id': team_id,
-                    'team_name': name,
-                    'team_abbreviation': name[:3].upper(), # Fallback de Abreviação
-                    'ortg': self._clean_numeric(cols[2].text),
-                    'drtg': self._clean_numeric(cols[3].text),
-                    'net_rating': self._clean_numeric(cols[4].text),
-                    'offense_rating': self._clean_numeric(cols[5].text) if len(cols) > 5 else 0.0,
-                    'defense_rating': self._clean_numeric(cols[6].text) if len(cols) > 6 else 0.0,
-                    'record_date': self.current_date,
-                    'period': self.period_label,
-                    'created_at': self.current_timestamp
-                })
+            if not teams_list:
+                logger.warning("[VAL-WARN] Estrutura reconhecida, mas matriz de dados nula.")
+                return pd.DataFrame()
+
+            teams_data = [{
+                'team_id': t.get('teamId') or t.get('id'),
+                'team_name': t.get('teamName') or t.get('name'),
+                'team_abbreviation': t.get('teamAbbr') or t.get('abbr'),
+                'ortg': float(t.get('oRtg') or 0),
+                'drtg': float(t.get('dRtg') or 0),
+                'net_rating': float(t.get('netRtg') or 0),
+                'offense_rating': float(t.get('offense') or 0),
+                'defense_rating': float(t.get('defense') or 0),
+                'record_date': self.current_date,
+                'period': self.period_label,
+                'created_at': self.current_timestamp
+            } for t in teams_list]
 
             df = pd.DataFrame(teams_data)
-            logger.info(f"[SYS-OP] Matriz gerada: {len(df)} vetores.")
+            logger.info(f"[SYS-OP] Sucesso: {len(df)} vetores NBA extraídos.")
             return df
             
         except Exception as e:
-            logger.error(f"[NET-ERR] Falha crítica no parsing: {str(e)}")
+            logger.error(f"[NET-ERR] Falha na desestruturação: {str(e)}")
             return pd.DataFrame()
 
     def save_to_supabase(self, df: pd.DataFrame, table_name: str):
-        """Persistência via Upsert atômico."""
+        """Injeção atômica com resolução de conflito."""
         if df.empty: return
         records = df.to_dict('records')
         try:
             self.supabase.table(table_name).upsert(
                 records, on_conflict='team_id,record_date,period'
             ).execute()
-            logger.info(f"[DB-SYNC] {table_name}: OK.")
+            logger.info(f"[DB-SYNC] Tabela {table_name} sincronizada.")
         except Exception as e:
-            logger.error(f"[DB-ERR] Falha na persistência: {e}")
+            logger.error(f"[DB-ERR] Falha de persistência: {e}")
 
     def run(self):
-        df_stats = self.fetch_team_stats()
-        if df_stats.empty:
-            raise ValueError("[SYS-STOP] Abortando: Dados insuficientes.")
+        """Orquestração principal com telemetria final."""
+        summary = {'status': 'FAILED', 'execution_date': self.current_timestamp}
+        try:
+            df_stats = self.fetch_team_stats()
+            if df_stats.empty:
+                raise ValueError("Fluxo interrompido: Matriz de dados vazia.")
             
-        self.save_to_supabase(df_stats, 'databallr_team_stats')
-        
-        summary = {
-            'execution_date': self.current_timestamp,
-            'teams_processed': len(df_stats),
-            'status': 'SUCCESS'
-        }
-        
-        with open("execution_summary.json", "w") as f:
-            json.dump(summary, f)
-            
-        return summary
+            self.save_to_supabase(df_stats, 'databallr_team_stats')
+            summary.update({
+                'status': 'SUCCESS',
+                'teams_processed': len(df_stats),
+                'avg_net_rating': float(df_stats['net_rating'].mean())
+            })
+            logger.info("[SYS-OP] Pipeline concluído com integridade.")
+        except Exception as e:
+            logger.critical(f"[FATAL] {str(e)}")
+            summary['error'] = str(e)
+            raise
+        finally:
+            with open("execution_summary.json", "w") as f:
+                json.dump(summary, f, indent=2)
 
 if __name__ == "__main__":
     DataballrScraper().run()
-        
+    
