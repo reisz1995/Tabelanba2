@@ -1,189 +1,101 @@
-name: Databallr Scraper - Last 14 Days
+name: Databallr Pipeline - Last 14 Days
 
 on:
   schedule:
+    # 06:00 UTC (03:00 BRT) - Sincronia pré-mercado
     - cron: '0 6 * * *'
   workflow_dispatch:
     inputs:
       period:
-        description: 'Período para coleta'
+        description: 'Período de Extração'
         required: true
         default: 'last14'
         type: choice
-        options:
-          - last14
-          - last30
-          - full_season
+        options: [last14, last30, full_season]
 
 env:
   PYTHON_VERSION: '3.11'
   SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-  # [CORREÇÃO] Mudando de SUPABASE_KEY para SUPABASE_SERVICE_KEY
-  SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }} 
+  # Blinda o script contra variações de nome no cofre de segredos
+  SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY || secrets.SUPABASE_KEY }}
   DATABALLR_SEASON: '2025-26'
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
-  
+
 permissions:
   contents: read
   issues: write
 
 jobs:
-  scrape-databallr:
+  scrape-and-validate:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     
     steps:
-      - name: Checkout repository
+      - name: 📥 [INIT] Checkout Repository
         uses: actions/checkout@v4
-      
-      - name: Setup Python
+
+      - name: 🐍 [ENV] Setup Python Environment
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          # [FIX] cache: 'pip' removido para evitar colapso sem requirements.txt
-      
-      - name: Install dependencies
+          cache: 'pip'
+
+      - name: 📦 [DEPS] Install Scraping Stack
         run: |
           python -m pip install --upgrade pip
-          pip install pandas requests supabase python-dotenv
-      
-      - name: Run Databallr Scraper
+          pip install pandas requests supabase python-dotenv beautifulsoup4 lxml
+
+      - name: 🏀 [OP] Execute Databallr Scraper (HTML Engine)
         id: scraper
         env:
           DATABALLR_PERIOD: ${{ github.event.inputs.period || 'last14' }}
         run: python scraper_databallr.py
-      
-      - name: Upload logs artifact
+
+      - name: 🧪 [VAL] Data Integrity Check
+        if: success()
+        run: |
+          cat << 'EOF' > validate.py
+          import os, sys
+          from supabase import create_client
+          from datetime import datetime, timezone, timedelta
+          
+          # Auth Check
+          url = os.environ.get("SUPABASE_URL")
+          key = os.environ.get("SUPABASE_SERVICE_KEY")
+          client = create_client(url, key)
+          
+          # Temporal Anchor (BRT)
+          today = (datetime.now(timezone.utc) - timedelta(hours=3)).date().isoformat()
+          
+          res = client.table('databallr_team_stats').select('id').eq('record_date', today).execute()
+          count = len(res.data)
+          
+          if count == 0:
+              print(f"❌ [FAIL] Zero registros em {today}"); sys.exit(1)
+          print(f"✅ [OK] {count} vetores sincronizados para {today}")
+          EOF
+          python validate.py
+
+      - name: 📂 [DATA] Upload Execution Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: scraper-logs-${{ github.run_id }}
+          name: telemetria-nba-${{ github.run_id }}
           path: |
             *.log
             execution_summary.json
           retention-days: 7
-      
-      - name: Notify on failure
+
+      - name: 🚨 [NOTIFY] Failure Alert
         if: failure()
         uses: actions/github-script@v7
-        continue-on-error: true
         with:
           script: |
-            try {
-              await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title: `🚨 Falha Crítica de Scraper (Databallr) - ${new Date().toISOString()}`,
-                body: `Anomalia detectada no fluxo de extração. Run ID: #${{ github.run_id }}.\n\nRevisar logs de telemetria imediatamente.`,
-                labels: ['bug', 'data-pipeline', 'automated']
-              });
-            } catch (error) {
-              core.warning(`Falha de interface ao reportar anomalia: ${error.message}`);
-            }
-
-  validate-data:
-    needs: scrape-databallr
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      
-      - name: Install dependencies
-        run: pip install supabase pandas
-      
-      - name: Validate data quality
-        run: |
-          cat << 'EOF' > validate.py
-          import os
-          import sys
-          from datetime import datetime, timezone, timedelta
-          from supabase import create_client
-
-          supabase = create_client(os.environ['SUPABASE_URL'], os.environ['SUPABASE_KEY'])
-
-          brt_timezone = timezone(timedelta(hours=-3))
-          today = datetime.now(brt_timezone).date().isoformat()
-          
-          result = supabase.table('databallr_team_stats').select('*').eq('record_date', today).execute()
-          
-          record_count = len(result.data)
-          if record_count == 0:
-              print(f"❌ [CRÍTICO] Perda de integridade: 0 registros encontrados para {today}.")
-              sys.exit(1)
-          
-          if record_count < 30:
-              print(f"⚠️ [AVISO] Inconsistência de volume: {record_count}/30 registros encontrados.")
-          else:
-              print(f"✅ [ESTÁVEL] Validação aprovada: {record_count} vetores sincronizados.")
-          EOF
-          python validate.py
-
-  generate-report:
-    if: ${{ success() }}
-    needs: [scrape-databallr, validate-data]
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      
-      - name: Install dependencies
-        run: pip install supabase pandas
-      
-      - name: Generate daily report
-        run: |
-          cat << 'EOF' > generate_report.py
-          import os
-          import json
-          from datetime import datetime, timedelta
-          from supabase import create_client
-
-          supabase = create_client(os.environ['SUPABASE_URL'], os.environ['SUPABASE_KEY'])
-
-          fourteen_days_ago = (datetime.now() - timedelta(days=14)).date().isoformat()
-          
-          result = supabase.table('databallr_team_stats')\
-              .select('*')\
-              .gte('record_date', fourteen_days_ago)\
-              .order('net_rating', desc=True)\
-              .limit(10)\
-              .execute()
-          
-          top_teams = result.data
-          display_limit = min(5, len(top_teams))
-          
-          report = {
-              'generated_at': datetime.now().isoformat(),
-              'period': 'last_14_days',
-              'top_teams_sample': top_teams[:display_limit],
-              'total_teams_processed': len(top_teams)
-          }
-          
-          with open('daily_report.json', 'w') as f:
-              json.dump(report, f, indent=2, default=str)
-          
-          print("📊 Renderização de HUD Relatório:")
-          print("---------------------------------")
-          for i, team in enumerate(top_teams[:display_limit], 1):
-              print(f"{i:02d}. {team['team_name'].ljust(20)} | NR: {team['net_rating']:+.1f}")
-          EOF
-          python generate_report.py
-      
-      - name: Upload report
-        uses: actions/upload-artifact@v4
-        with:
-          name: daily-report-${{ github.run_id }}
-          path: daily_report.json
-          retention-days: 30
-          
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `🚨 FALHA NO PIPELINE: NBA SCRAPER (${new Date().toISOString()})`,
+              body: `Anomalia detectada. Run ID: #${context.runId}\nVerificar logs de parsing e conexão Supabase.`,
+              labels: ['bug', 'critical', 'data-integrity']
+            })
+            
