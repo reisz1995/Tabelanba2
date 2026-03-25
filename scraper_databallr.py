@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Módulo Extrator NBA [Databallr -> Supabase]
-Versão: 5.1 (Direct API Link + JSON Auto-Discovery)
+Versão: 5.2 (Deep-Search & Key Normalization Engine)
 Estética: Replicante / Architect-Engineer
 """
 
@@ -68,7 +68,7 @@ class DataballrScraper:
         self.supabase: Client = create_client(url, key)
 
     def fetch_data(self) -> pd.DataFrame:
-        """Motor Matemático: Extração via API + Heurística O(N)."""
+        """Motor Matemático: Extração via API + Heurística de Profundidade + Normalização."""
         logger.info(f"[NET-FETCH] Link Direto Estabelecido: {self.api_url}")
         
         try:
@@ -76,48 +76,69 @@ class DataballrScraper:
             response.raise_for_status()
             payload = response.json()
             
-            # --- ALGORITMO DE AUTO-DESCOBERTA (HEURÍSTICA) ---
-            teams = []
+            # --- ALGORITMO DE AUTO-DESCOBERTA AVANÇADO ---
+            teams_raw = []
             target_key = "UNKNOWN"
-            for key, val in payload.items():
-                if isinstance(val, list) and len(val) >= 28:
-                    if isinstance(val[0], dict) and ('TeamId' in val[0] or 'TeamAbbreviation' in val[0]):
-                        teams = val
-                        target_key = key
-                        break
             
-            if not teams:
-                logger.error(f"[VAL-ERR] Matriz nula. Chaves detectadas no payload: {list(payload.keys())}")
+            # Varredura O(N) em Profundidade 0 e 1
+            for k, v in payload.items():
+                if isinstance(v, list) and len(v) >= 28:
+                    teams_raw = v
+                    target_key = k
+                    break
+                elif isinstance(v, dict):
+                    for sub_k, sub_v in v.items():
+                        if isinstance(sub_v, list) and len(sub_v) >= 28:
+                            teams_raw = sub_v
+                            target_key = f"{k}->{sub_k}"
+                            break
+            
+            if not teams_raw:
+                debug_info = {k: type(v).__name__ for k, v in payload.items()}
+                logger.error(f"[VAL-ERR] Matriz nula. Estrutura de dados recebida: {debug_info}")
+                if 'team' in payload and isinstance(payload['team'], list) and len(payload['team']) > 0:
+                    logger.error(f"[VAL-DEBUG] Chaves do primeiro item de 'team': {list(payload['team'][0].keys())}")
                 return pd.DataFrame()
 
-            logger.info(f"[SYS-OP] Matriz localizada sob a chave '{target_key}' com {len(teams)} vetores.")
+            logger.info(f"[SYS-OP] Matriz localizada no nó '{target_key}' com {len(teams_raw)} vetores.")
 
-            # Cálculo Base da Liga para Offense/Defense Rating
-            league_avg = payload.get('opponent', {}).get('league_avg', {})
-            league_pts = league_avg.get('Points', 0)
-            league_poss = league_avg.get('OffPoss', 1)
-            league_ortg = (league_pts / league_poss) * 100 if league_poss else 115.0
+            # Função de normalização de tensores (Ignora Case e Underscores)
+            def normalize(d):
+                return {str(k).lower().replace('_', ''): v for k, v in d.items()}
+
+            league_avg_raw = payload.get('opponent', {}).get('league_avg', {}) or payload.get('league_avg', {})
+            league_avg = normalize(league_avg_raw)
+            league_pts = league_avg.get('points', 0)
+            league_poss = league_avg.get('offposs', 1)
+            league_ortg = (league_pts / league_poss) * 100 if league_pts > 0 and league_poss > 0 else 115.0
             
             teams_data = []
-            for t in teams:
-                off_poss = t.get('OffPoss', 1)
-                def_poss = t.get('DefPoss', 1)
-                pts = t.get('Points', 0)
-                opp_pts = t.get('OpponentPoints', 0)
+            for t_raw in teams_raw:
+                t = normalize(t_raw)
+                
+                # Extração Flexível
+                off_poss = t.get('offposs', 1)
+                def_poss = t.get('defposs', 1)
+                pts = t.get('points', 0)
+                opp_pts = t.get('opponentpoints') or t.get('opppoints', 0)
                 
                 ortg = (pts / off_poss) * 100 if off_poss else 0.0
                 drtg = (opp_pts / def_poss) * 100 if def_poss else 0.0
                 net_rating = ortg - drtg
                 
-                o_ts = t.get('TsPct', 0.0)
-                o_tov = (t.get('Turnovers', 0) / off_poss) * 100 if off_poss else 0.0
-                orb = t.get('OffFGReboundPct', 0.0)
-                drb = t.get('DefFGReboundPct', 0.0)
+                o_ts = t.get('tspct', 0.0)
+                o_tov = (t.get('turnovers', 0) / off_poss) * 100 if off_poss else 0.0
+                orb = t.get('offfgreboundpct') or t.get('orbpct', 0.0)
+                drb = t.get('deffgreboundpct') or t.get('drbpct', 0.0)
+                
+                team_id = t.get('teamid') or t.get('id', 0)
+                team_name = t.get('name') or t.get('teamname', 'Unknown')
+                team_abbr = t.get('teamabbreviation') or t.get('abbr') or t.get('shortname', 'NBA')
                 
                 teams_data.append({
-                    'team_id': int(t.get('TeamId', 0)),
-                    'team_name': t.get('Name', 'Unknown'),
-                    'team_abbreviation': t.get('TeamAbbreviation', 'NBA'),
+                    'team_id': int(team_id),
+                    'team_name': team_name,
+                    'team_abbreviation': team_abbr,
                     'ortg': round(ortg, 1),
                     'drtg': round(drtg, 1),
                     'net_rating': round(net_rating, 1),
@@ -133,7 +154,7 @@ class DataballrScraper:
                 })
             
             df = pd.DataFrame(teams_data)
-            logger.info(f"[VAL-OK] {len(df)} vetores convertidos. Net Rating Médio: {df['net_rating'].mean():.2f}")
+            logger.info(f"[VAL-OK] {len(df)} vetores processados. Net Rating Médio: {df['net_rating'].mean():.2f}")
             return df
 
         except Exception as e:
@@ -146,7 +167,7 @@ class DataballrScraper:
         try:
             df = self.fetch_data()
             if df.empty:
-                raise ValueError("Vetor de dados nulo. Heurística falhou em encontrar a matriz.")
+                raise ValueError("Vetor de dados nulo. Heurística e Normalização falharam.")
             
             records = df.to_dict('records')
             self.supabase.table('databallr_team_stats').upsert(
