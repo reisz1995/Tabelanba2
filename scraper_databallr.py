@@ -10,6 +10,7 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
+from json import JSONDecodeError
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -70,6 +71,22 @@ class DataballrScraper:
         except (ValueError, TypeError):
             return 0.0
 
+    def _extract_teams_from_next_data(self, soup: BeautifulSoup) -> list[dict]:
+        """Extrair payload de times do bloco __NEXT_DATA__ com tolerância a falhas."""
+        script_tag = soup.find('script', id='__NEXT_DATA__')
+        if not script_tag or not script_tag.string:
+            return []
+
+        try:
+            payload = json.loads(script_tag.string)
+        except JSONDecodeError:
+            logger.warning("[VAL-WARN] __NEXT_DATA__ inválido. Fallback para parser DOM.")
+            return []
+
+        page_props = payload.get('props', {}).get('pageProps', {})
+        teams = page_props.get('teams') or page_props.get('initialData', {}).get('teams', [])
+        return teams if isinstance(teams, list) else []
+
     def fetch_data(self) -> pd.DataFrame:
         """Execução da Malha Híbrida de Extração."""
         logger.info(f"[NET-FETCH] Alvo: {self.base_url}/stats")
@@ -81,27 +98,22 @@ class DataballrScraper:
             soup = BeautifulSoup(response.text, 'lxml')
             
             # ESTRATÉGIA A: Desestruturação de Hidratação Next.js
-            script_tag = soup.find('script', id='__NEXT_DATA__')
-            if script_tag:
+            teams = self._extract_teams_from_next_data(soup)
+            if teams:
                 logger.info("[VAL-OK] Bloco __NEXT_DATA__ interceptado.")
-                payload = json.loads(script_tag.string)
-                page_props = payload.get('props', {}).get('pageProps', {})
-                teams = page_props.get('teams') or page_props.get('initialData', {}).get('teams', [])
-                
-                if teams:
-                    return pd.DataFrame([{
-                        'team_id': int(t.get('teamId') or t.get('id', 0)),
-                        'team_name': t.get('teamName') or t.get('name'),
-                        'team_abbreviation': (t.get('teamAbbr') or t.get('abbr') or "NBA").upper(),
-                        'ortg': float(t.get('oRtg') or 0),
-                        'drtg': float(t.get('dRtg') or 0),
-                        'net_rating': float(t.get('netRtg') or 0),
-                        'offense_rating': float(t.get('offense') or 0),
-                        'defense_rating': float(t.get('defense') or 0),
-                        'record_date': self.current_date,
-                        'period': self.period_label,
-                        'created_at': self.current_timestamp
-                    } for t in teams])
+                return pd.DataFrame([{
+                    'team_id': int(t.get('teamId') or t.get('id', 0)),
+                    'team_name': t.get('teamName') or t.get('name'),
+                    'team_abbreviation': (t.get('teamAbbr') or t.get('abbr') or "NBA").upper(),
+                    'ortg': float(t.get('oRtg') or 0),
+                    'drtg': float(t.get('dRtg') or 0),
+                    'net_rating': float(t.get('netRtg') or 0),
+                    'offense_rating': float(t.get('offense') or 0),
+                    'defense_rating': float(t.get('defense') or 0),
+                    'record_date': self.current_date,
+                    'period': self.period_label,
+                    'created_at': self.current_timestamp
+                } for t in teams])
 
             # ESTRATÉGIA B: Fallback de Tabela DOM (Resiliência)
             logger.warning("[VAL-WARN] Hidratação falhou. Acionando Motor de Parsing DOM.")
