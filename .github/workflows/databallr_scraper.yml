@@ -59,14 +59,14 @@ jobs:
           cat << 'EOF' > validate.py
           import os, sys
           from supabase import create_client
-          from datetime import datetime, timezone, timedelta
+          from datetime import datetime, timezone
           
           url = os.environ.get("SUPABASE_URL")
           key = os.environ.get("SUPABASE_SERVICE_KEY")
           client = create_client(url, key)
           
-          # Âncora temporal BRT (UTC-3)
-          today = (datetime.now(timezone.utc) - timedelta(hours=3)).date().isoformat()
+          # Âncora temporal UTC para alinhar com record_date do scraper
+          today = datetime.now(timezone.utc).date().isoformat()
           
           res = client.table('databallr_team_stats').select('id').eq('record_date', today).execute()
           if len(res.data) == 0:
