@@ -1,13 +1,12 @@
-name: Databallr Pipeline - Last 14 Days
+name: Databallr Scraper - Last 14 Days
 
 on:
   schedule:
-    # 06:00 UTC (03:00 BRT) - Sincronia pré-mercado
-    - cron: '0 6 * * *'
+    - cron: '0 6 * * *' # 03:00 BRT
   workflow_dispatch:
     inputs:
       period:
-        description: 'Período de Extração'
+        description: 'Período'
         required: true
         default: 'last14'
         type: choice
@@ -16,7 +15,7 @@ on:
 env:
   PYTHON_VERSION: '3.11'
   SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-  # Blinda o script contra variações de nome no cofre de segredos
+  # Mapeamento redundante para segredos
   SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY || secrets.SUPABASE_KEY }}
   DATABALLR_SEASON: '2025-26'
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
@@ -26,32 +25,32 @@ permissions:
   issues: write
 
 jobs:
-  scrape-and-validate:
+  scrape-and-sync:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     
     steps:
-      - name: 📥 [INIT] Checkout Repository
+      - name: 📥 [INIT] Checkout
         uses: actions/checkout@v4
 
-      - name: 🐍 [ENV] Setup Python Environment
+      - name: 🐍 [ENV] Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
 
-      - name: 📦 [DEPS] Install Scraping Stack
+      - name: 📦 [DEPS] Install Core Stack
         run: |
           python -m pip install --upgrade pip
           pip install pandas requests supabase python-dotenv beautifulsoup4 lxml
 
-      - name: 🏀 [OP] Execute Databallr Scraper (HTML Engine)
+      - name: 🏀 [OP] Run Next.js Scraper Engine
         id: scraper
         env:
           DATABALLR_PERIOD: ${{ github.event.inputs.period || 'last14' }}
         run: python scraper_databallr.py
 
-      - name: 🧪 [VAL] Data Integrity Check
+      - name: 🧪 [VAL] Data Integrity Validation
         if: success()
         run: |
           cat << 'EOF' > validate.py
@@ -59,34 +58,31 @@ jobs:
           from supabase import create_client
           from datetime import datetime, timezone, timedelta
           
-          # Auth Check
           url = os.environ.get("SUPABASE_URL")
           key = os.environ.get("SUPABASE_SERVICE_KEY")
           client = create_client(url, key)
           
-          # Temporal Anchor (BRT)
+          # Âncora temporal BRT (UTC-3)
           today = (datetime.now(timezone.utc) - timedelta(hours=3)).date().isoformat()
           
           res = client.table('databallr_team_stats').select('id').eq('record_date', today).execute()
-          count = len(res.data)
-          
-          if count == 0:
-              print(f"❌ [FAIL] Zero registros em {today}"); sys.exit(1)
-          print(f"✅ [OK] {count} vetores sincronizados para {today}")
+          if len(res.data) == 0:
+              print(f"❌ [CRITICAL] Dados não encontrados para {today}"); sys.exit(1)
+          print(f"✅ [STABLE] {len(res.data)} registros confirmados.")
           EOF
           python validate.py
 
-      - name: 📂 [DATA] Upload Execution Artifacts
+      - name: 📂 [DATA] Persist Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: telemetria-nba-${{ github.run_id }}
           path: |
+            *.json
             *.log
-            execution_summary.json
           retention-days: 7
 
-      - name: 🚨 [NOTIFY] Failure Alert
+      - name: 🚨 [NOTIFY] Issue on Failure
         if: failure()
         uses: actions/github-script@v7
         with:
@@ -94,8 +90,8 @@ jobs:
             github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `🚨 FALHA NO PIPELINE: NBA SCRAPER (${new Date().toISOString()})`,
-              body: `Anomalia detectada. Run ID: #${context.runId}\nVerificar logs de parsing e conexão Supabase.`,
-              labels: ['bug', 'critical', 'data-integrity']
+              title: `🚨 FALHA CRÍTICA: Databallr Scraper (${new Date().toISOString()})`,
+              body: `Falha na extração de dados NBA. Verificar motor de hidratação Next.js.\nRun ID: #${context.runId}`,
+              labels: ['bug', 'data-integrity']
             })
             
