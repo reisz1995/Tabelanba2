@@ -22,6 +22,7 @@ env:
   PYTHON_VERSION: '3.11'
   SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
   SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+  DATABALLR_SEASON: '2025-26'
 
 jobs:
   scrape-databallr:
@@ -45,6 +46,8 @@ jobs:
       
       - name: Run Databallr Scraper
         id: scraper
+        env:
+          DATABALLR_PERIOD: ${{ github.event.inputs.period || 'last14' }}
         run: python scraper_databallr.py
       
       - name: Upload logs artifact

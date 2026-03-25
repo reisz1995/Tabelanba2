@@ -8,10 +8,8 @@ import os
 import json
 import requests
 import pandas as pd
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from datetime import datetime
 from supabase import create_client, Client
-import time
 import logging
 
 # Configuração de logging
@@ -22,8 +20,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class DataballrScraper:
-    def __init__(self):
+    PERIOD_MAP = {
+        "last14": "last_14_days",
+        "last30": "last_30_days",
+        "full_season": "full_season",
+    }
+
+    def __init__(self, period: str = "last14", season: str = "2025-26"):
         self.base_url = "https://databallr.com"
+        if period not in self.PERIOD_MAP:
+            raise ValueError(f"Período inválido: {period}. Use um de: {', '.join(self.PERIOD_MAP.keys())}")
+        self.period = period
+        self.period_label = self.PERIOD_MAP[period]
+        self.season = season
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -51,8 +60,8 @@ class DataballrScraper:
         url = f"{self.base_url}/api/team-stats"
         
         params = {
-            'season': '2025-26',
-            'period': 'last14',  # Últimos 14 dias/2 semanas
+            'season': self.season,
+            'period': self.period,
             'type': 'per100'     # Per 100 possessions
         }
         
@@ -82,7 +91,7 @@ class DataballrScraper:
                     'net_eff': team.get('netEff'),
                     'net_poss': team.get('netPoss'),
                     'record_date': datetime.now().date().isoformat(),
-                    'period': 'last_14_days',
+                    'period': self.period_label,
                     'created_at': datetime.now().isoformat()
                 }
                 teams_data.append(team_record)
@@ -105,8 +114,8 @@ class DataballrScraper:
         url = f"{self.base_url}/api/team-advanced"
         
         params = {
-            'season': '2025-26',
-            'period': 'last14'
+            'season': self.season,
+            'period': self.period
         }
         
         try:
@@ -131,7 +140,7 @@ class DataballrScraper:
                     'opp_ts_pct': team.get('oppTsPct'),
                     'pace': team.get('pace'),
                     'record_date': datetime.now().date().isoformat(),
-                    'period': 'last_14_days',
+                    'period': self.period_label,
                     'created_at': datetime.now().isoformat()
                 }
                 advanced_data.append(record)
@@ -200,7 +209,7 @@ class DataballrScraper:
         Executa o pipeline completo
         """
         logger.info("=" * 50)
-        logger.info("Iniciando scraper do Databallr - Últimos 14 dias")
+        logger.info(f"Iniciando scraper do Databallr - Período: {self.period_label}")
         logger.info("=" * 50)
         
         # 1. Buscar estatísticas básicas
@@ -221,7 +230,7 @@ class DataballrScraper:
         summary = {
             'execution_date': datetime.now().isoformat(),
             'teams_processed': len(df_stats),
-            'period': 'last_14_days',
+            'period': self.period_label,
             'avg_ortg': df_stats['ortg'].mean() if not df_stats.empty else None,
             'avg_drtg': df_stats['drtg'].mean() if not df_stats.empty else None,
             'top_offense': df_stats.loc[df_stats['ortg'].idxmax(), 'team_name'] if not df_stats.empty else None,
@@ -235,12 +244,20 @@ class DataballrScraper:
         logger.info("Pipeline concluído com sucesso!")
         logger.info(f"Resumo: {json.dumps(summary, indent=2, default=str)}")
         logger.info("=" * 50)
+
+        with open("execution_summary.json", "w", encoding="utf-8") as summary_file:
+            json.dump(summary, summary_file, indent=2, default=str, ensure_ascii=False)
+        logger.info("Arquivo execution_summary.json gerado com sucesso")
         
         return summary
 
+
 def main():
-    scraper = DataballrScraper()
+    period = os.getenv("DATABALLR_PERIOD", "last14")
+    season = os.getenv("DATABALLR_SEASON", "2025-26")
+    scraper = DataballrScraper(period=period, season=season)
     scraper.run()
+
 
 if __name__ == "__main__":
     main()
