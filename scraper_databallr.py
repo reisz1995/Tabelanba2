@@ -50,7 +50,8 @@ class DataballrScraper:
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Referer': f"{self.base_url}/stats",
+            # [CORREÇÃO] Apontando para o novo referer
+            'Referer': f"{self.base_url}/teams", 
             'X-Requested-With': 'XMLHttpRequest'
         })
         
@@ -87,15 +88,15 @@ class DataballrScraper:
         teams = page_props.get('teams') or page_props.get('initialData', {}).get('teams', [])
         return teams if isinstance(teams, list) else []
 
-    def fetch_data(self) -> pd.DataFrame:
+        def fetch_data(self) -> pd.DataFrame:
         """Execução da Malha Híbrida de Extração."""
-        logger.info(f"[NET-FETCH] Alvo: {self.base_url}/stats")
+        # [CORREÇÃO] Atualizando o log e a URL alvo para /teams
+        logger.info(f"[NET-FETCH] Alvo: {self.base_url}/teams")
         
         try:
-            response = self.session.get(f"{self.base_url}/stats", timeout=20)
+            response = self.session.get(f"{self.base_url}/teams", timeout=20)
             response.raise_for_status()
-            
-            soup = BeautifulSoup(response.text, 'lxml')
+
             
             # ESTRATÉGIA A: Desestruturação de Hidratação Next.js
             teams = self._extract_teams_from_next_data(soup)
