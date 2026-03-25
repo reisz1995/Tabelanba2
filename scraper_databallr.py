@@ -1,21 +1,18 @@
 #!/usr/bin/env python3
 """
 Módulo Extrator NBA [Databallr -> Supabase]
-Versão: 4.1 (Hybrid Resilient Engine - Teams Topology)
+Versão: 5.0 (Direct API Data Link - Reverse Engineered)
 Estética: Replicante / Architect-Engineer
 """
 
 import os
 import json
 import logging
-import re
 from datetime import datetime, timezone
-from json import JSONDecodeError
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import pandas as pd
-from bs4 import BeautifulSoup
 from supabase import create_client, Client
 
 # Configuração de Telemetria HUD
@@ -27,141 +24,133 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class DataballrScraper:
-    PERIOD_MAP = {
-        "last14": "last_14_days",
-        "last30": "last_30_days",
-        "full_season": "full_season",
-    }
-
     def __init__(self, period: str = "last14", season: str = "2025-26"):
-        self.base_url = "https://databallr.com"
         self.period = os.getenv("DATABALLR_PERIOD", period)
-        self.period_label = self.PERIOD_MAP.get(self.period, "last_14_days")
-        self.season = os.getenv("DATABALLR_SEASON", season)
+        
+        # Mapeamento do período para a coluna 'period' no Supabase
+        db_period_map = {
+            "last14": "last_14_days",
+            "last30": "last_30_days",
+            "full_season": "full_season",
+        }
+        self.db_period_label = db_period_map.get(self.period, "last_14_days")
+        
+        # Engenharia Reversa: Mapeamento do parâmetro 'date_window' da API
+        api_window_map = {
+            "last14": "last_14_days", 
+            "last30": "last_30_days",
+            "full_season": "this_year"
+        }
+        self.api_date_window = api_window_map.get(self.period, "last_14_days")
+        
+        # Resolução da Temporada (ex: '2025-26' -> '2026')
+        season_env = os.getenv("DATABALLR_SEASON", season)
+        self.api_season = "20" + season_env.split('-')[1] if '-' in season_env else "2026"
+        
+        # Endpoint Maestro (Artéria de Dados)
+        self.api_url = f"https://api.databallr.com/api/supabase/team_stats?season={self.api_season}&leverage=all&date_window={self.api_date_window}"
         
         now_utc = datetime.now(timezone.utc)
         self.current_date = now_utc.date().isoformat()
         self.current_timestamp = now_utc.isoformat()
         
-        # Protocolo de Rede: Camuflagem e Resiliência
+        # Protocolo de Rede: Foco em Headers de API
         self.session = requests.Session()
         retries = Retry(total=5, backoff_factor=1, status_forcelist=[403, 429, 500, 502, 503, 504])
         self.session.mount('https://', HTTPAdapter(max_retries=retries))
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Referer': f"{self.base_url}/teams",
-            'X-Requested-With': 'XMLHttpRequest'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept': 'application/json',
+            'Referer': 'https://databallr.com/',
+            'Origin': 'https://databallr.com'
         })
         
-        # Injeção de Dependência: Supabase Auth
+        # Gateway do Supabase
         url = os.environ.get("SUPABASE_URL")
         key = os.environ.get("SUPABASE_SERVICE_KEY") or os.environ.get("SUPABASE_KEY")
         
         if not url or not key:
-            raise EnvironmentError("[SYS-ERR] Matriz de credenciais incompleta.")
+            raise EnvironmentError("[SYS-ERR] Credenciais Supabase não detectadas.")
         self.supabase: Client = create_client(url, key)
 
-    def _clean_numeric(self, text: str) -> float:
-        """Expurgar caracteres não-numéricos (rankings, sinais, whitespace)."""
-        if not text or text.strip() in ["-", ""]: return 0.0
-        try:
-            clean = re.sub(r'#\d+|[+% \n\r]', '', text)
-            return float(clean)
-        except (ValueError, TypeError):
-            return 0.0
-
-    def _extract_teams_from_next_data(self, soup: BeautifulSoup) -> list:
-        """Extrair payload de times do bloco __NEXT_DATA__ com tolerância a falhas."""
-        script_tag = soup.find('script', id='__NEXT_DATA__')
-        if not script_tag or not script_tag.string:
-            return []
-
-        try:
-            payload = json.loads(script_tag.string)
-        except JSONDecodeError:
-            logger.warning("[VAL-WARN] __NEXT_DATA__ inválido. Fallback para parser DOM.")
-            return []
-
-        page_props = payload.get('props', {}).get('pageProps', {})
-        teams = page_props.get('teams') or page_props.get('initialData', {}).get('teams', [])
-        return teams if isinstance(teams, list) else []
-
     def fetch_data(self) -> pd.DataFrame:
-        """Execução da Malha Híbrida de Extração."""
-        logger.info(f"[NET-FETCH] Alvo: {self.base_url}/teams")
+        """Motor Matemático: Extração Pura via API (O(1) Parsing)."""
+        logger.info(f"[NET-FETCH] Link Direto Estabelecido: {self.api_url}")
         
         try:
-            response = self.session.get(f"{self.base_url}/teams", timeout=20)
+            response = self.session.get(self.api_url, timeout=20)
             response.raise_for_status()
             
-            soup = BeautifulSoup(response.text, 'lxml')
+            payload = response.json()
+            teams = payload.get('team_data', [])
             
-            # ESTRATÉGIA A: Desestruturação de Hidratação Next.js
-            teams = self._extract_teams_from_next_data(soup)
-            if teams:
-                logger.info("[VAL-OK] Bloco __NEXT_DATA__ interceptado.")
-                return pd.DataFrame([{
-                    'team_id': int(t.get('teamId') or t.get('id', 0)),
-                    'team_name': t.get('teamName') or t.get('name'),
-                    'team_abbreviation': (t.get('teamAbbr') or t.get('abbr') or "NBA").upper(),
-                    'ortg': float(t.get('oRtg') or 0),
-                    'drtg': float(t.get('dRtg') or 0),
-                    'net_rating': float(t.get('netRtg') or 0),
-                    'offense_rating': float(t.get('offense') or 0),
-                    'defense_rating': float(t.get('defense') or 0),
-                    'record_date': self.current_date,
-                    'period': self.period_label,
-                    'created_at': self.current_timestamp
-                } for t in teams])
-
-            # ESTRATÉGIA B: Fallback de Tabela DOM (Resiliência)
-            logger.warning("[VAL-WARN] Hidratação falhou. Acionando Motor de Parsing DOM.")
-            table = soup.find('table')
-            if not table:
-                logger.error("[VAL-ERR] Nenhuma estrutura tabular localizada.")
+            if not teams:
+                logger.error("[VAL-ERR] A API respondeu (200 OK), mas a matriz de times está vazia.")
                 return pd.DataFrame()
 
-            rows = table.find_all('tr')[1:]
+            # Cálculo Base da Liga para Offense/Defense Rating
+            league_avg = payload.get('opponent', {}).get('league_avg', {})
+            league_pts = league_avg.get('Points', 0)
+            league_poss = league_avg.get('OffPoss', 1)
+            league_ortg = (league_pts / league_poss) * 100 if league_poss else 115.0
+            
             teams_data = []
-            for row in rows:
-                cols = row.find_all('td')
-                if len(cols) < 5: continue
+            for t in teams:
+                # Variáveis Estruturais Absolutas
+                off_poss = t.get('OffPoss', 1)
+                def_poss = t.get('DefPoss', 1)
+                pts = t.get('Points', 0)
+                opp_pts = t.get('OpponentPoints', 0)
                 
-                name = cols[1].get_text(strip=True)
-                img = cols[1].find('img')
-                t_id_match = re.search(r'/(\d+)\.', img['src']) if img else None
-                t_id = int(t_id_match.group(1)) if t_id_match else 0
-
+                # Conversão Estatística (Per 100 Possessions)
+                ortg = (pts / off_poss) * 100 if off_poss else 0.0
+                drtg = (opp_pts / def_poss) * 100 if def_poss else 0.0
+                net_rating = ortg - drtg
+                
+                # Six Factors
+                o_ts = t.get('TsPct', 0.0)
+                o_tov = (t.get('Turnovers', 0) / off_poss) * 100 if off_poss else 0.0
+                orb = t.get('OffFGReboundPct', 0.0)
+                drb = t.get('DefFGReboundPct', 0.0)
+                
                 teams_data.append({
-                    'team_id': t_id,
-                    'team_name': name,
-                    'team_abbreviation': name[:3].upper(),
-                    'ortg': self._clean_numeric(cols[2].text),
-                    'drtg': self._clean_numeric(cols[3].text),
-                    'net_rating': self._clean_numeric(cols[4].text),
-                    'offense_rating': self._clean_numeric(cols[5].text) if len(cols) > 5 else 0.0,
-                    'defense_rating': self._clean_numeric(cols[6].text) if len(cols) > 6 else 0.0,
+                    'team_id': int(t.get('TeamId', 0)),
+                    'team_name': t.get('Name', 'Unknown'),
+                    'team_abbreviation': t.get('TeamAbbreviation', 'NBA'),
+                    'ortg': round(ortg, 1),
+                    'drtg': round(drtg, 1),
+                    'net_rating': round(net_rating, 1),
+                    'offense_rating': round(ortg - league_ortg, 1),
+                    'defense_rating': round(league_ortg - drtg, 1), 
+                    'o_ts': round(o_ts * 100, 1),
+                    'o_tov': round(o_tov, 1),
+                    'orb': round(orb * 100, 1),
+                    'drb': round(drb * 100, 1),
                     'record_date': self.current_date,
-                    'period': self.period_label,
+                    'period': self.db_period_label,
                     'created_at': self.current_timestamp
                 })
             
-            return pd.DataFrame(teams_data)
+            df = pd.DataFrame(teams_data)
+            logger.info(f"[VAL-OK] {len(df)} vetores convertidos. Net Rating Médio Geral: {df['net_rating'].mean():.2f}")
+            return df
 
+        except requests.exceptions.HTTPError as http_err:
+            logger.error(f"[NET-ERR] Falha HTTP: {http_err.response.status_code}")
+            return pd.DataFrame()
         except Exception as e:
-            logger.error(f"[FATAL] Colapso do motor de busca: {str(e)}")
+            logger.error(f"[FATAL] Falha de tipagem ou conexão no JSON: {str(e)}")
             return pd.DataFrame()
 
     def run(self):
-        """Orquestração de Fluxo e Persistência."""
+        """Pipeline Atômico de Persistência."""
         summary = {'status': 'FAILED', 'execution_date': self.current_timestamp}
         try:
             df = self.fetch_data()
             if df.empty:
-                raise ValueError("Vetor de dados nulo após varredura completa.")
+                raise ValueError("Vetor de dados nulo. Parâmetro de API não reconhecido.")
             
-            # Sincronização Supabase (Upsert)
+            # Upsert no Supabase
             records = df.to_dict('records')
             self.supabase.table('databallr_team_stats').upsert(
                 records, on_conflict='team_id,record_date,period'
@@ -170,9 +159,10 @@ class DataballrScraper:
             summary.update({
                 'status': 'SUCCESS', 
                 'teams_processed': len(df),
-                'avg_net_rating': float(df['net_rating'].mean())
+                'api_endpoint': self.api_url,
+                'avg_net_rating': round(float(df['net_rating'].mean()), 2)
             })
-            logger.info(f"[SYS-OP] Sincronia concluída: {len(df)} registros.")
+            logger.info(f"[SYS-OP] Sincronia concluída. Banco atualizado.")
             
         except Exception as e:
             summary['error'] = str(e)
@@ -184,4 +174,4 @@ class DataballrScraper:
 
 if __name__ == "__main__":
     DataballrScraper().run()
-                      
+    
