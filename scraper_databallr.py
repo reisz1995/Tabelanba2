@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Módulo Extrator NBA [Databallr -> Supabase]
-Versão: 5.2 (Deep-Search & Key Normalization Engine)
+Módulo Extrator NBA [Databallr -> Supabase -> Google AI Studio]
+Versão: 5.3 (Deep-Search, Key Normalization & Extended Tensors)
 Estética: Replicante / Architect-Engineer
 """
 
@@ -122,9 +122,13 @@ class DataballrScraper:
                 pts = t.get('points', 0)
                 opp_pts = t.get('opponentpoints') or t.get('opppoints', 0)
                 
+                # [DERIVAÇÃO DE TENSORES] net_poss e net_eff
+                net_poss = off_poss - def_poss
+                
                 ortg = (pts / off_poss) * 100 if off_poss else 0.0
                 drtg = (opp_pts / def_poss) * 100 if def_poss else 0.0
                 net_rating = ortg - drtg
+                net_eff = ortg - drtg
                 
                 o_ts = t.get('tspct', 0.0)
                 o_tov = (t.get('turnovers', 0) / off_poss) * 100 if off_poss else 0.0
@@ -142,6 +146,8 @@ class DataballrScraper:
                     'ortg': round(ortg, 1),
                     'drtg': round(drtg, 1),
                     'net_rating': round(net_rating, 1),
+                    'net_poss': round(net_poss, 1),
+                    'net_eff': round(net_eff, 1),
                     'offense_rating': round(ortg - league_ortg, 1),
                     'defense_rating': round(league_ortg - drtg, 1), 
                     'o_ts': round(o_ts * 100, 1),
@@ -170,8 +176,10 @@ class DataballrScraper:
                 raise ValueError("Vetor de dados nulo. Heurística e Normalização falharam.")
             
             records = df.to_dict('records')
+            
+            # [OTIMIZAÇÃO] Resolução de conflitos baseada em (team_id, period)
             self.supabase.table('databallr_team_stats').upsert(
-                records, on_conflict='team_id,record_date,period'
+                records, on_conflict='team_id,period'
             ).execute()
             
             summary.update({
@@ -180,7 +188,7 @@ class DataballrScraper:
                 'api_endpoint': self.api_url,
                 'avg_net_rating': round(float(df['net_rating'].mean()), 2)
             })
-            logger.info(f"[SYS-OP] Sincronia concluída. Banco Supabase atualizado.")
+            logger.info(f"[SYS-OP] Sincronia concluída. Banco Supabase atualizado e livre de duplicatas.")
             
         except Exception as e:
             summary['error'] = str(e)
@@ -192,4 +200,4 @@ class DataballrScraper:
 
 if __name__ == "__main__":
     DataballrScraper().run()
-    
+                
