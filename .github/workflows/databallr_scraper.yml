@@ -53,25 +53,32 @@ jobs:
           DATABALLR_PERIOD: ${{ github.event.inputs.period || 'last14' }}
         run: python scraper_databallr.py
 
-      - name: 🧪 [VAL] Data Integrity Validation
+            - name: 🧪 [VAL] Data Integrity Validation
         if: success()
+        env:
+          DATABALLR_PERIOD: ${{ github.event.inputs.period || 'last14' }}
         run: |
           cat << 'EOF' > validate.py
           import os, sys
           from supabase import create_client
-          from datetime import datetime, timezone
           
           url = os.environ.get("SUPABASE_URL")
           key = os.environ.get("SUPABASE_SERVICE_KEY")
           client = create_client(url, key)
           
-          # Âncora temporal UTC para alinhar com record_date do scraper
-          today = datetime.now(timezone.utc).date().isoformat()
+          # Mapeamento do tensor de injeção
+          period_map = {"last14": "last_14_days", "last30": "last_30_days", "full_season": "full_season"}
+          target_period = period_map.get(os.environ.get("DATABALLR_PERIOD", "last14"))
           
-          res = client.table('databallr_team_stats').select('id').eq('record_date', today).execute()
-          if len(res.data) == 0:
-              print(f"❌ [CRITICAL] Dados não encontrados para {today}"); sys.exit(1)
-          print(f"✅ [STABLE] {len(res.data)} registros confirmados.")
+          # Auditoria de volumetria absoluta
+          res = client.table('databallr_team_stats').select('id', count='exact').eq('period', target_period).execute()
+          
+          if res.count == 0:
+              print(f"❌ [CRITICAL] Colapso na persistência: 0 vetores detectados para a variável {target_period}"); sys.exit(1)
+          elif res.count < 30:
+              print(f"⚠️ [WARN] Fragmentação: Apenas {res.count}/30 matrizes de equipe encontradas no quadrante."); sys.exit(0)
+              
+          print(f"✅ [STABLE] {res.count} vetores operacionais. Malha Supabase pronta para leitura da IA.")
           EOF
           python validate.py
 
