@@ -53,7 +53,7 @@ jobs:
           DATABALLR_PERIOD: ${{ github.event.inputs.period || 'last14' }}
         run: python scraper_databallr.py
 
-       - name: 🧪 [VAL] Data Integrity Validation
+      - name: 🧪 [VAL] Data Integrity Validation
         if: success()
         env:
           DATABALLR_PERIOD: ${{ github.event.inputs.period || 'last14' }}
