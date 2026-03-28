@@ -24,22 +24,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class DataballrScraper:
-    def __init__(self, period: str = "last14", season: str = "2025-26"):
-        self.period = os.getenv("DATABALLR_PERIOD", period)
-        
-        db_period_map = {
-            "last14": "last_14_days",
-            "last30": "last_30_days",
-            "full_season": "full_season",
-        }
-        self.db_period_label = db_period_map.get(self.period, "last_14_days")
-        
-        api_window_map = {
-            "last14": "last_14_days", 
-            "last30": "last_30_days",
-            "full_season": "this_year"
-        }
-        self.api_date_window = api_window_map.get(self.period, "last_14_days")
+    def __init__(self, season: str = "2025-26"):
+        # [FIXO] Removido suporte a múltiplos períodos
+        self.period = "last14" 
+        self.db_period_label = "last_14_days"
+        self.api_date_window = "last_14_days"
         
         season_env = os.getenv("DATABALLR_SEASON", season)
         self.api_season = "20" + season_env.split('-')[1] if '-' in season_env else "2026"
