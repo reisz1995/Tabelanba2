@@ -1,18 +1,11 @@
-name: Databallr Scraper - Last 14 Days
+name: Databallr Scraper - Last 14 Days (Hardcoded)
 
 on:
   schedule:
-    - cron: '0 6 * * *' # 03:00 BRT
+    - cron: '0 6 * * *' # Execução automática: 03:00 BRT
   workflow_dispatch:
-    inputs:
-      period:
-        description: 'Período'
-        required: true
-        default: 'last14'
-        type: choice
-        options: [last14, last30, full_season]
+    # [SYS-OP] Inputs removidos para garantir integridade do banco (Apenas 14 dias)
 
-# [SYS-OP] Variáveis públicas e seguras ficam no escopo Global
 env:
   PYTHON_VERSION: '3.11'
   DATABALLR_SEASON: '2025-26'
@@ -27,36 +20,31 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     
-    # [CORREÇÃO] Variáveis sigilosas descem para o escopo do Job
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY || secrets.SUPABASE_KEY }}
     
     steps:
-      - name: 📥 [INIT] Checkout
+      - name: 📥 [INIT] Checkout do Repositório
         uses: actions/checkout@v4
 
-      - name: 🐍 [ENV] Setup Python
+      - name: 🐍 [ENV] Setup Python Environment
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
 
-      - name: 📦 [DEPS] Install Core Stack
+      - name: 📦 [DEPS] Instalação de Dependências Core
         run: |
           python -m pip install --upgrade pip
           pip install pandas requests supabase python-dotenv beautifulsoup4 lxml
 
-      - name: 🏀 [OP] Run Next.js Scraper Engine
+      - name: 🏀 [OP] Execução do Motor Scraper (14d)
         id: scraper
-        env:
-          DATABALLR_PERIOD: ${{ github.event.inputs.period || 'last14' }}
         run: python scraper_databallr.py
 
-      - name: 🧪 [VAL] Data Integrity Validation
+      - name: 🧪 [VAL] Validação de Densidade de Dados
         if: success()
-        env:
-          DATABALLR_PERIOD: ${{ github.event.inputs.period || 'last14' }}
         run: |
           cat << 'EOF' > validate.py
           import os, sys
@@ -66,23 +54,21 @@ jobs:
           key = os.environ.get("SUPABASE_SERVICE_KEY")
           client = create_client(url, key)
           
-          # Mapeamento do tensor de injeção
-          period_map = {"last14": "last_14_days", "last30": "last_30_days", "full_season": "full_season"}
-          target_period = period_map.get(os.environ.get("DATABALLR_PERIOD", "last14"))
+          # Constante de auditoria fixa para o novo modelo
+          target_period = "last_14_days"
           
-          # Auditoria de volumetria absoluta
           res = client.table('databallr_team_stats').select('id', count='exact').eq('period', target_period).execute()
           
           if res.count == 0:
-              print(f"❌ [CRITICAL] Colapso na persistência: 0 vetores detectados para a variável {target_period}"); sys.exit(1)
+              print(f"❌ [CRITICAL] Vazio detectado: {target_period} não possui vetores."); sys.exit(1)
           elif res.count < 30:
-              print(f"⚠️ [WARN] Fragmentação: Apenas {res.count}/30 matrizes de equipe encontradas no quadrante."); sys.exit(0)
+              print(f"⚠️ [WARN] Fragmentação detectada: {res.count}/30 equipes processadas."); sys.exit(0)
               
-          print(f"✅ [STABLE] {res.count} vetores operacionais. Malha Supabase pronta para leitura da IA.")
+          print(f"✅ [STABLE] {res.count} vetores operacionais no quadrante 14d.")
           EOF
           python validate.py
 
-      - name: 📂 [DATA] Persist Artifacts
+      - name: 📂 [DATA] Persistência de Telemetria
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -92,7 +78,7 @@ jobs:
             *.log
           retention-days: 7
 
-      - name: 🚨 [NOTIFY] Issue on Failure
+      - name: 🚨 [NOTIFY] Geração de Ticket em Caso de Falha
         if: failure()
         uses: actions/github-script@v7
         with:
@@ -100,8 +86,8 @@ jobs:
             github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `🚨 FALHA CRÍTICA: Databallr Scraper (${new Date().toISOString()})`,
-              body: `Falha na extração de dados NBA. Verificar motor de hidratação Next.js.\nRun ID: #${context.runId}`,
+              title: `🚨 FALHA CRÍTICA: Scraper 14d (${new Date().toISOString()})`,
+              body: `Falha na extração ou validação. Run ID: #${context.runId}`,
               labels: ['bug', 'data-integrity']
             })
             
