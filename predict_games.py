@@ -1,5 +1,5 @@
 import os
-import sys # <--- ADICIONADO AQUI: Módulo de Sistema
+import sys
 import json
 import time
 import requests
@@ -17,7 +17,7 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
 if not all([SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, GROQ_API_KEY]):
     print("❌ COLAPSO_DE_SISTEMA: Faltam variáveis de ambiente.")
-    sys.exit(1) # <--- CORRIGIDO AQUI
+    sys.exit(1)
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 groq_client = Groq(api_key=GROQ_API_KEY)
@@ -67,8 +67,7 @@ def with_retry(func, retries=3):
 # ==========================================
 def get_espn_games(date_obj):
     base_date = date_obj.strftime('%Y%m%d')
-    # URL 1: Limpa de qualquer formatação oculta
-    url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={base_date}"
+    url = f"[https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=](https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=){base_date}"
     
     try:
         res = requests.get(url, timeout=10).json()
@@ -77,8 +76,7 @@ def get_espn_games(date_obj):
         if not events:
             next_day = (date_obj + timedelta(days=1)).strftime('%Y%m%d')
             print(f"⚠️ Vetor nulo detectado para {base_date}. Redirecionando radar para {next_day}...")
-            # URL 2: Limpa de qualquer formatação oculta
-            url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={next_day}"
+            url = f"[https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=](https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=){next_day}"
             res = requests.get(url, timeout=10).json()
             events = res.get('events', [])
 
@@ -97,7 +95,6 @@ def get_espn_games(date_obj):
     except Exception as e:
         print(f"❌ Colapso na interface ESPN: {e}")
         return []
-
 
 def get_databallr_matrix():
     try:
@@ -444,7 +441,7 @@ if __name__ == "__main__":
     if not games:
         print("✅ STATUS VERDE: Ausência confirmada de jogos na NBA para esta janela de 48h.")
         print("Finalizando operação pacificamente para preservar recursos computacionais.")
-        sys.exit(0) # <--- CORRIGIDO AQUI
+        sys.exit(0)
     
     print("🧠 Carregando tensores de eficiência Databallr (14 Dias)...")
     databallr_matrix = get_databallr_matrix()
@@ -473,9 +470,9 @@ if __name__ == "__main__":
             game, inj_monitor, h2h_data, home_stats, away_stats,
             home_momentum, away_momentum, home_defense, away_defense,
             home_db_stats, away_db_stats
-        ) 
-
-    if ai_result:
+        )
+        
+        if ai_result:
             predictions.append({
                 "id": game_id, 
                 "date": date_iso, 
@@ -495,12 +492,12 @@ if __name__ == "__main__":
                     "away_def_rating": away_defense.get('defensive_rating')
                 }
             })
-        time.sleep(1.5) # Respeita o
+        time.sleep(1.5)
 
     if games and not predictions:
         print("⚠️ ALERTA CRÍTICO: Jogos detetados, mas a IA gerou zero matrizes preditivas.")
         print("Possível colapso no parse JSON do Groq ou Rate Limit excedido.")
-        sys.exit(1) # <--- CORRIGIDO AQUI
+        sys.exit(1)
 
     print(f"📦 Empacotando {len(predictions)} matrizes preditivas para injeção no Supabase...")
     
@@ -509,4 +506,4 @@ if __name__ == "__main__":
         print("✅ SUCESSO ABSOLUTO: Matrizes termodinâmicas injetadas na tabela 'game_predictions'.")
     except Exception as e:
         print(f"❌ FALHA NO UPSERT: {e}")
-        sys.exit(1) # <--- CORRIGIDO AQUI
+        sys.exit(1)
