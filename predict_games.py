@@ -473,28 +473,29 @@ if __name__ == "__main__":
             game, inj_monitor, h2h_data, home_stats, away_stats,
             home_momentum, away_momentum, home_defense, away_defense,
             home_db_stats, away_db_stats
-        )
-        
-        if ai_result:
+        ) 
+
+    if ai_result:
             predictions.append({
-                "game_id": game_id,
-                "date": date_iso,
-                "home_team": home_full,
+                "id": game_id, 
+                "date": date_iso, 
+                "home_team": home_full, 
                 "away_team": away_full,
-                "prediction": ai_result.get("palpite_principal", ""),
+                "prediction": json.dumps(ai_result, ensure_ascii=False),
+                "main_pick": ai_result.get("palpite_principal", "N/A"),
                 "confidence": float(ai_result.get("confianca", 0.0)),
                 "over_line": ai_result.get("linha_seguranca_over", ""),
                 "under_line": ai_result.get("linha_seguranca_under", ""),
                 "handicap_line": ai_result.get("handicap_recomendado", ""),
                 "injury_alert": ai_result.get("alerta_lesao", "Não"),
                 "key_factor": ai_result.get("keyFactor", ""),
-                "momentum_data": h2h_data,
+                "momentum_data": h2h_data, # <--- RESTAURAÇÃO: Apenas os confrontos diretos
                 "defense_data": {
                     "home_def_rating": home_defense.get('defensive_rating'),
                     "away_def_rating": away_defense.get('defensive_rating')
                 }
             })
-        time.sleep(1.5)
+        time.sleep(1.5) # Respeita o
 
     if games and not predictions:
         print("⚠️ ALERTA CRÍTICO: Jogos detetados, mas a IA gerou zero matrizes preditivas.")
