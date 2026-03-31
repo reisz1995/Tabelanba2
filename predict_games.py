@@ -1,4 +1,3 @@
-
 import os
 import json
 import time
@@ -33,34 +32,27 @@ class InjuryMonitor:
                 self.injuries = json.load(f)
 
     def get_elite_injuries(self, team_name, min_rating=7.0):
-        """Retorna apenas lesões de jogadores elite (nota >= 7)."""
         elite_injuries = []
         for injury in self.injuries:
             if team_name in injury.get('team_name', ''):
-                # Verifica se há rating do jogador
                 player_rating = injury.get('player_rating', 0) or injury.get('rating', 0)
                 if isinstance(player_rating, (int, float)) and player_rating >= min_rating:
                     elite_injuries.append(injury)
-                # Se não tiver rating explícito, verifica se é "star" ou "all-star"
                 elif injury.get('is_star') or injury.get('all_star') or injury.get('impact') == 'high':
                     elite_injuries.append(injury)
         return elite_injuries
 
 def extract_pure_json(raw_response):
-    """Remove a escória visual (Markdown) que a IA injeta no texto."""
     clean_text = raw_response.strip()
     if clean_text.startswith("```json"):
         clean_text = clean_text[7:]
     elif clean_text.startswith("```"):
         clean_text = clean_text[3:]
-        
     if clean_text.endswith("```"):
         clean_text = clean_text[:-3]
-        
     return clean_text.strip()
 
 def with_retry(func, retries=3):
-    """Motor de resiliência contra latência de rede."""
     for attempt in range(retries + 1):
         try:
             return func()
@@ -73,7 +65,7 @@ def with_retry(func, retries=3):
 # 3. INTERFACES DE DADOS (ESPN & SUPABASE)
 # ==========================================
 def get_espn_games(date_obj):
-    url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={date_obj.strftime('%Y%m%d')}"
+    url = f"[https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=](https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=){date_obj.strftime('%Y%m%d')}"
     res = requests.get(url).json()
     games = []
     for event in res.get('events', []):
@@ -87,182 +79,137 @@ def get_espn_games(date_obj):
     return games
 
 def get_databallr_matrix():
-    """Extrai os tensores de eficiência (14d) persistidos pelo scraper_databallr."""
     try:
         res = supabase.table("databallr_team_stats").select("*").eq("period", "last_14_days").execute()
-        # Mapeia usando o nome do time em minúsculas para facilitar o matching
         return {str(row.get("team_name")).lower(): row for row in res.data}
     except Exception as e:
         print(f"⚠️ Falha de conexão com a matriz Databallr: {e}")
         return {}
 
 def match_databallr_stats(espn_team_name, databallr_matrix):
-    """Algoritmo de aproximação para parear strings de times (ESPN -> Databallr)."""
     espn_lower = espn_team_name.lower()
     
-    # Tentativa 1: Match exato
     if espn_lower in databallr_matrix:
         return databallr_matrix[espn_lower]
         
-    # Tentativa 2: Match por substring (ex: 'Boston Celtics' contém 'Celtics')
     for db_name, stats in databallr_matrix.items():
         if db_name in espn_lower or espn_lower in db_name:
             return stats
             
-    # Fallback: Vetor neutro
     return {"ortg": 115.0, "drtg": 115.0, "net_eff": 0.0, "o_ts": 55.0, "orb": 25.0, "net_poss": 0}
-    
 
 def get_market_odds(home_full, away_full):
-    res = supabase.table("nba_odds_matrix").select("*").execute()
-    for row in res.data:
-        if home_full in row.get("matchup", "") or away_full in row.get("matchup", ""):
-            return row
+    try:
+        res = supabase.table("nba_odds_matrix").select("*").execute()
+        for row in res.data:
+            if home_full in row.get("matchup", "") or away_full in row.get("matchup", ""):
+                return row
+    except:
+        pass
     return "Mercado Indisponível"
 
 def get_team_stats(team_id):
-    """Busca estatísticas avançadas do time (contender status, defesa, pace)."""
     try:
-        url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/{team_id}"
+        url = f"[https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/](https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/){team_id}"
         res = requests.get(url, timeout=10).json()
         team_data = res.get('team', {})
         
-        # Dados de standings para calcular win%
         standing = team_data.get('standingSummary', '')
         record = team_data.get('record', {})
-        
-        # Calcular win rate e streak
-        overall = record.get('items', [{}])[0] if record.get('items') else {}
-        stats = overall.get('stats', [])
+        items = record.get('items', [])
         
         wins = 0
         losses = 0
         win_pct = 0.5
         streak = "0"
         
-        for stat in stats:
-            if stat.get('name') == 'wins':
-                wins = int(stat.get('value', 0))
-            elif stat.get('name') == 'losses':
-                losses = int(stat.get('value', 0))
-            elif stat.get('name') == 'streak':
-                streak = stat.get('displayValue', '0')
+        if items and len(items) > 0:
+            overall = items[0]
+            stats = overall.get('stats', [])
+            
+            if isinstance(stats, list):
+                for stat in stats:
+                    stat_name = stat.get('name')
+                    if stat_name == 'wins':
+                        wins = int(stat.get('value', 0))
+                    elif stat_name == 'losses':
+                        losses = int(stat.get('value', 0))
+                    elif stat_name == 'streak':
+                        streak = stat.get('displayValue', '0')
         
-        if wins + losses > 0:
+        if (wins + losses) > 0:
             win_pct = wins / (wins + losses)
-        
-        # Classificar como contender (>60% wins) ou fraco (<40% wins)
-        is_contender = win_pct >= 0.60
-        is_weak = win_pct <= 0.40
         
         return {
             'win_pct': win_pct,
             'wins': wins,
             'losses': losses,
             'streak': streak,
-            'is_contender': is_contender,
-            'is_weak': is_weak,
+            'is_contender': win_pct >= 0.60,
+            'is_weak': win_pct <= 0.40,
             'standing_summary': standing
         }
     except Exception as e:
         print(f"⚠️ Erro ao buscar stats do time {team_id}: {e}")
         return {
-            'win_pct': 0.5,
-            'wins': 0,
-            'losses': 0,
-            'streak': '0',
-            'is_contender': False,
-            'is_weak': False,
-            'standing_summary': ''
+            'win_pct': 0.5, 'wins': 0, 'losses': 0, 'streak': '0',
+            'is_contender': False, 'is_weak': False, 'standing_summary': ''
         }
 
 def get_team_defense_metrics(team_id):
-    """Busca métricas defensivas e de pace do time."""
     def normalize_metric_value(raw_value):
-        """Converte valores da API (string/number) para float quando possível."""
-        if raw_value is None:
-            return None
-        if isinstance(raw_value, (int, float)):
-            return float(raw_value)
+        if raw_value is None: return None
+        if isinstance(raw_value, (int, float)): return float(raw_value)
         if isinstance(raw_value, str):
             cleaned = raw_value.strip().replace(",", ".")
-            if not cleaned:
-                return None
-            try:
-                return float(cleaned)
-            except ValueError:
-                return None
+            if not cleaned: return None
+            try: return float(cleaned)
+            except ValueError: return None
         return None
 
     def iter_stats_objects(payload):
-        """
-        Caminha recursivamente pelo payload e retorna qualquer lista de stats encontrada.
-        Isso evita quebra quando a ESPN altera o shape do JSON.
-        """
         if isinstance(payload, dict):
             for key, value in payload.items():
-                if key == "stats" and isinstance(value, list):
-                    yield from value
-                else:
-                    yield from iter_stats_objects(value)
+                if key == "stats" and isinstance(value, list): yield from value
+                else: yield from iter_stats_objects(value)
         elif isinstance(payload, list):
-            for item in payload:
-                yield from iter_stats_objects(item)
+            for item in payload: yield from iter_stats_objects(item)
 
     def match_stat_name(stat):
-        name = str(stat.get('name', '')).lower().strip()
-        display_name = str(stat.get('displayName', '')).lower().strip()
-        short_display_name = str(stat.get('shortDisplayName', '')).lower().strip()
-        summary = " ".join([name, display_name, short_display_name])
-
-        if "defensive" in summary and "rating" in summary:
-            return "defensive_rating"
-        if "pace" in summary:
-            return "pace"
-        if "points allowed" in summary or "opp points" in summary or "opponent points" in summary:
-            return "points_allowed"
+        summary = " ".join([
+            str(stat.get('name', '')).lower().strip(),
+            str(stat.get('displayName', '')).lower().strip(),
+            str(stat.get('shortDisplayName', '')).lower().strip()
+        ])
+        if "defensive" in summary and "rating" in summary: return "defensive_rating"
+        if "pace" in summary: return "pace"
+        if "points allowed" in summary or "opp points" in summary or "opponent points" in summary: return "points_allowed"
         return None
 
     try:
-        # ESPN API para estatísticas do time
-        url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/{team_id}/statistics"
+        url = f"[https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/](https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/){team_id}/statistics"
         res = requests.get(url, timeout=10)
-        
-        if res.status_code != 200:
-            print(f"⚠️ Endpoint de estatísticas retornou status {res.status_code} para team_id={team_id}")
-            return {'defensive_rating': None, 'pace': None, 'points_allowed': None}
+        if res.status_code != 200: return {'defensive_rating': None, 'pace': None, 'points_allowed': None}
         
         data = res.json()
         defensive_rating, pace, points_allowed = None, None, None
 
         for stat in iter_stats_objects(data):
             metric_name = match_stat_name(stat)
-            if not metric_name:
-                continue
+            if not metric_name: continue
+            metric_value = normalize_metric_value(stat.get('value', stat.get('displayValue')))
 
-            metric_value = normalize_metric_value(
-                stat.get('value', stat.get('displayValue'))
-            )
-
-            if metric_name == "defensive_rating" and defensive_rating is None:
-                defensive_rating = metric_value
-            elif metric_name == "pace" and pace is None:
-                pace = metric_value
-            elif metric_name == "points_allowed" and points_allowed is None:
-                points_allowed = metric_value
+            if metric_name == "defensive_rating" and defensive_rating is None: defensive_rating = metric_value
+            elif metric_name == "pace" and pace is None: pace = metric_value
+            elif metric_name == "points_allowed" and points_allowed is None: points_allowed = metric_value
         
-        return {
-            'defensive_rating': defensive_rating,
-            'pace': pace,
-            'points_allowed': points_allowed
-        }
+        return {'defensive_rating': defensive_rating, 'pace': pace, 'points_allowed': points_allowed}
     except Exception as e:
         print(f"⚠️ Erro ao buscar métricas defensivas: {e}")
         return {'defensive_rating': None, 'pace': None, 'points_allowed': None}
 
 def extract_h2h(team_id, opponent_id):
-    url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/{team_id}/schedule"
-    
+    url = f"[https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/](https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/){team_id}/schedule"
     def fetch_schedule():
         res = requests.get(url, timeout=10)
         res.raise_for_status() 
@@ -290,7 +237,6 @@ def extract_h2h(team_id, opponent_id):
                 
             main_s = get_score(main)
             opp_s = get_score(opp)
-            
             parsed.append({
                 "date": dt.strftime("%d/%m"),
                 "result": 'V' if main.get('winner') else 'D',
@@ -302,13 +248,10 @@ def extract_h2h(team_id, opponent_id):
         return []
 
 def get_last_games(team_id, limit=5):
-    """Busca os últimos jogos do time para análise de momentum."""
-    url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/{team_id}/schedule"
-    
+    url = f"[https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/](https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/){team_id}/schedule"
     try:
         res = requests.get(url, timeout=10)
         events = res.json().get('events', [])
-        
         past_games = [e for e in events if e['competitions'][0]['status']['type']['state'] == 'post']
         past_games.sort(key=lambda x: x['date'], reverse=True)
         
@@ -319,14 +262,10 @@ def get_last_games(team_id, limit=5):
         for g in past_games[:limit]:
             comp = g['competitions'][0]
             team_comp = next((c for c in comp['competitors'] if c['id'] == str(team_id)), None)
-            
             if team_comp:
                 is_winner = team_comp.get('winner', False)
-                if is_winner:
-                    wins += 1
-                else:
-                    losses += 1
-                
+                if is_winner: wins += 1
+                else: losses += 1
                 last_games.append({
                     'result': 'V' if is_winner else 'D',
                     'date': g['date'][:10],
@@ -344,26 +283,63 @@ def get_last_games(team_id, limit=5):
         return {'last_games': [], 'wins_last_5': 0, 'losses_last_5': 0, 'momentum_score': 0.5}
 
 # ==========================================
-# 4. MOTOR PREDITIVO (GROQ IA) - CORREÇÃO DE PAYLOAD
+# 4. MOTOR PREDITIVO (GROQ IA)
 # ==========================================
+SYSTEM_INSTRUCTION = """Você é o Estatístico Chefe do sistema NBA-MONITOR. Calcule o Edge.
+
+DIRETRIZES OBRIGATÓRIAS DE ANÁLISE:
+
+1. MATEMÁTICA DE OVER/UNDER (DATABALLR 14D - PRIORIDADE MÁXIMA):
+   - Utilize as métricas avançadas dos últimos 14 dias (ORTG, DRTG, NET_EFF, True Shooting).
+   - Equação Base: Projete a pontuação cruzando o ORTG (Ataque) de um time contra o DRTG (Defesa) do outro, ajustado pelo Ritmo (Pace/Net Poss).
+   - Defesa em Colapso = DRTG > 116.0. Ataque de Elite = ORTG > 117.0.
+   - OVER RECOMENDADO apenas se ambos os times tiverem projeção matemática > 112 pontos cada e True Shooting (o_ts) > 57%.
+
+2. IMPACTO DE ESTRELAS (ELITE ONLY):
+   - Só considere impacto de lesão se o jogador for ESTRELA DE ELITE (nota >= 7.0 ou All-Star)
+
+3. FATORES CASA E MOMENTUM:
+   - Contenders (win% >= 60%) em casa: Vantagem massiva.
+   - Use o NET_EFF (Eficiência Líquida) recente para validar se o momentum de V/D é real ou sorte.
+
+4. HANDICAPS (REGRAS OBRIGATÓRIAS):
+   - EVITE linhas exatas de +5.5. Prefira extremidades (+10 underdog claro, -5 favorito sólido).
+
+SAÍDA OBRIGATÓRIA (JSON Estrito):
+{
+  "palpite_principal": "string (ex: OVER 225.5, Boston -5, Philadelphia +10)",
+  "confianca": 0.0,
+  "linha_seguranca_over": "string",
+  "linha_seguranca_under": "string", 
+  "handicap_recomendado": "string",
+  "alerta_lesao": "string",
+  "keyFactor": "string (ex: ORTG vs DRTG cruzado indica Over, Edge de Net_Eff)",
+  "detailedAnalysis": "string (máximo 200 chars, foco no embate matemático dos últimos 14d)"
+}"""
+
 def analyze_game(game, inj_monitor, h2h, home_stats, away_stats, home_momentum, away_momentum, home_defense, away_defense, home_db, away_db):
     home = game['home']['displayName']
     away = game['away']['displayName']
     
-    # NOTA DO ARQUITETO: Assegure-se de que as extrações originais (lesões, def_rating, bad_defense) 
-    # ocorram NESTA SEÇÃO antes da montagem do payload.
-    # Exemplo simulado de variáveis que precisam estar presentes:
+    # 4.1. Instanciação de Variáveis em Memória
     home_def_rating = home_defense.get('defensive_rating')
     away_def_rating = away_defense.get('defensive_rating')
-    home_bad_defense = home_def_rating and home_def_rating > 116.0
-    away_bad_defense = away_def_rating and away_def_rating > 116.0
+    
+    safe_home_drtg = home_def_rating if home_def_rating is not None else 115.0
+    safe_away_drtg = away_def_rating if away_def_rating is not None else 115.0
+    
+    home_bad_defense = safe_home_drtg > 116.0
+    away_bad_defense = safe_away_drtg > 116.0
+    
     home_elite_inj = inj_monitor.get_elite_injuries(home)
     away_elite_inj = inj_monitor.get_elite_injuries(away)
+    
     home_momentum_score = home_momentum.get('momentum_score', 0.5)
     away_momentum_score = away_momentum.get('momentum_score', 0.5)
+    
     home_advantage_factor = "ALTO" if home_stats.get('is_contender') else "NORMAL"
 
-    # [CORREÇÃO] Fusão total do payload. O código anterior sobrescrevia a matriz Databallr.
+    # 4.2. Acoplamento de Payload Unificado
     payload = {
         "Confronto": f"{home} vs {away}",
         "Metricas_Avancadas_14_Dias_Databallr": {
@@ -425,6 +401,7 @@ def analyze_game(game, inj_monitor, h2h, home_stats, away_stats, home_momentum, 
         }
     }
     
+    # 4.3. Chamada de Inferência Groq
     def call_groq():
         res = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
@@ -444,79 +421,3 @@ def analyze_game(game, inj_monitor, h2h, home_stats, away_stats, home_momentum, 
     except Exception as e: 
         print(f"❌ Erro IA ({home} vs {away}): {e}")
         return None
-
-# ==========================================
-# 5. EXECUÇÃO PRINCIPAL (MAIN) - RESTAURAÇÃO
-# ==========================================
-if __name__ == "__main__": # [CORREÇÃO] Remoção do 'if' duplicado
-    date_obj = datetime.now(pytz.timezone('America/Sao_Paulo'))
-    date_iso = date_obj.strftime("%Y-%m-%d")
-    print(f"🕒 INICIANDO MOTOR PREDITIVO PARA A DATA: {date_iso}")
-
-    inj_monitor = InjuryMonitor("nba_injuries.json")
-    games = get_espn_games(date_obj)
-    
-    # CARREGAMENTO DA MATRIZ AVANÇADA
-    print("🧠 Carregando tensores de eficiência Databallr (14 Dias)...")
-    databallr_matrix = get_databallr_matrix()
-    
-    predictions = []
-
-    for game in games:
-        home_full = game['home']['displayName']
-        away_full = game['away']['displayName']
-        game_id = f"{date_iso}_{home_full}_{away_full}".replace(" ", "_")
-        
-        print(f"⚡ Processando colisão: {home_full} vs {away_full}")
-        
-        # [CORREÇÃO] Pareamento concluído
-        home_db_stats = match_databallr_stats(home_full, databallr_matrix)
-        away_db_stats = match_databallr_stats(away_full, databallr_matrix) 
-        
-        h2h_data = {"home_vs_away": extract_h2h(game['home']['id'], game['away']['id'])}
-        home_stats = get_team_stats(game['home']['id'])
-        away_stats = get_team_stats(game['away']['id'])
-        home_momentum = get_last_games(game['home']['id'], limit=5)
-        away_momentum = get_last_games(game['away']['id'], limit=5)
-        home_defense = get_team_defense_metrics(game['home']['id'])
-        away_defense = get_team_defense_metrics(game['away']['id'])
-        
-        ai_result = analyze_game(
-            game, inj_monitor, h2h_data, home_stats, away_stats,
-            home_momentum, away_momentum, home_defense, away_defense,
-            home_db_stats, away_db_stats
-        )
-        
-        if ai_result:
-            predictions.append({
-                "game_id": game_id,
-                "game_date": date_iso,
-                "home_team": home_full,
-                "away_team": away_full,
-                "prediction": ai_result.get("palpite_principal", ""),
-                "confidence_score": float(ai_result.get("confianca", 0.0)),
-                "over_line": ai_result.get("linha_seguranca_over", ""),
-                "under_line": ai_result.get("linha_seguranca_under", ""),
-                "handicap_line": ai_result.get("handicap_recomendado", ""),
-                "injury_alert": ai_result.get("alerta_lesao", "Não"),
-                "key_factor": ai_result.get("keyFactor", ""),
-                "momentum_data": h2h_data,
-                "defense_data": {
-                    "home_def_rating": home_defense.get('defensive_rating'),
-                    "away_def_rating": away_defense.get('defensive_rating')
-                }
-            })
-        time.sleep(1.5)
-
-    if not predictions:
-        print("⚠️ ALERTA CRÍTICO: Zero predições geradas.")
-        exit(1)
-
-    print(f"📦 Empacotando {len(predictions)} matrizes preditivas para injeção no Supabase...")
-    
-    try:
-        supabase.table("game_predictions").upsert(predictions).execute()
-        print("✅ SUCESSO ABSOLUTO: Matrizes injetadas na tabela 'game_predictions'.")
-    except Exception as e:
-        print(f"❌ FALHA NO UPSERT: {e}")
-
