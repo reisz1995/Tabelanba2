@@ -2,7 +2,7 @@ import os
 import json
 import time
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 from supabase import create_client
 from groq import Groq
@@ -65,18 +65,37 @@ def with_retry(func, retries=3):
 # 3. INTERFACES DE DADOS (ESPN & SUPABASE)
 # ==========================================
 def get_espn_games(date_obj):
-    url = f"[https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=](https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=){date_obj.strftime('%Y%m%d')}"
-    res = requests.get(url).json()
-    games = []
-    for event in res.get('events', []):
-        comps = event['competitions'][0]['competitors']
-        games.append({
-            'id': event['id'], 
-            'date': event['date'],
-            'home': next(c['team'] for c in comps if c['homeAway'] == 'home'),
-            'away': next(c['team'] for c in comps if c['homeAway'] == 'away')
-        })
-    return games
+    """Interface de extração ESPN com varredura temporal estendida e fallback para D+1."""
+    base_date = date_obj.strftime('%Y%m%d')
+    url = f"[https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=](https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=){base_date}"
+    
+    try:
+        res = requests.get(url, timeout=10).json()
+        events = res.get('events', [])
+        
+        # Lógica Condicional: Se hoje estiver vazio, varrer o quadrante de amanhã
+        if not events:
+            next_day = (date_obj + timedelta(days=1)).strftime('%Y%m%d')
+            print(f"⚠️ Vetor nulo detetado para {base_date}. Redirecionando radar para {next_day}...")
+            url = f"[https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=](https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=){next_day}"
+            res = requests.get(url, timeout=10).json()
+            events = res.get('events', [])
+
+        games = []
+        for event in events:
+            comps = event['competitions'][0]['competitors']
+            games.append({
+                'id': event['id'], 
+                'date': event['date'],
+                'home': next(c['team'] for c in comps if c['homeAway'] == 'home'),
+                'away': next(c['team'] for c in comps if c['homeAway'] == 'away')
+            })
+            
+        print(f"📡 Radar ESPN: {len(games)} confrontos detetados no espaço-tempo.")
+        return games
+    except Exception as e:
+        print(f"❌ Colapso na interface ESPN: {e}")
+        return []
 
 def get_databallr_matrix():
     try:
@@ -421,3 +440,29 @@ def analyze_game(game, inj_monitor, h2h, home_stats, away_stats, home_momentum, 
     except Exception as e: 
         print(f"❌ Erro IA ({home} vs {away}): {e}")
         return None
+
+# ==========================================
+# 5. EXECUÇÃO PRINCIPAL (MAIN)
+# ==========================================
+if __name__ == "__main__":
+    date_obj = datetime.now(pytz.timezone('America/Sao_Paulo'))
+    date_iso = date_obj.strftime("%Y-%m-%d")
+    print(f"🕒 INICIANDO MOTOR PREDITIVO PARA A DATA: {date_iso}")
+
+    inj_monitor = InjuryMonitor("nba_injuries.json")
+    games = get_espn_games(date_obj)
+
+    # ==========================================
+    # GESTÃO DE PÂNICO - FASE 1
+    # ==========================================
+    if not games:
+        print("✅ STATUS VERDE: Ausência confirmada de jogos na NBA para esta janela de 48h.")
+        print("Finalizando operação pacificamente para preservar recursos computacionais.")
+        exit(0)
+    
+    print("🧠 Carregando tensores de eficiência Databallr (14 Dias)...")
+    databallr_matrix = get_databallr_matrix()
+    
+    predictions = []
+
+    for gam
