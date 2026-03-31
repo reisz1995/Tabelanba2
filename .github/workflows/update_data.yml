@@ -34,6 +34,7 @@ jobs:
         run: |
           node scrape.js
           node importPlayers.js
+          node scraper_databallr.py
           node scripts/update-nba-stats.js
       
       # --- FASE 2: PYTHON (ESTATÍSTICO CHEFE & LESÕES) ---
