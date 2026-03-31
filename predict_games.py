@@ -86,6 +86,33 @@ def get_espn_games(date_obj):
         })
     return games
 
+def get_databallr_matrix():
+    """Extrai os tensores de eficiência (14d) persistidos pelo scraper_databallr."""
+    try:
+        res = supabase.table("databallr_team_stats").select("*").eq("period", "last_14_days").execute()
+        # Mapeia usando o nome do time em minúsculas para facilitar o matching
+        return {str(row.get("team_name")).lower(): row for row in res.data}
+    except Exception as e:
+        print(f"⚠️ Falha de conexão com a matriz Databallr: {e}")
+        return {}
+
+def match_databallr_stats(espn_team_name, databallr_matrix):
+    """Algoritmo de aproximação para parear strings de times (ESPN -> Databallr)."""
+    espn_lower = espn_team_name.lower()
+    
+    # Tentativa 1: Match exato
+    if espn_lower in databallr_matrix:
+        return databallr_matrix[espn_lower]
+        
+    # Tentativa 2: Match por substring (ex: 'Boston Celtics' contém 'Celtics')
+    for db_name, stats in databallr_matrix.items():
+        if db_name in espn_lower or espn_lower in db_name:
+            return stats
+            
+    # Fallback: Vetor neutro
+    return {"ortg": 115.0, "drtg": 115.0, "net_eff": 0.0, "o_ts": 55.0, "orb": 25.0, "net_poss": 0}
+    
+
 def get_market_odds(home_full, away_full):
     res = supabase.table("nba_odds_matrix").select("*").execute()
     for row in res.data:
@@ -323,26 +350,21 @@ SYSTEM_INSTRUCTION = """Você é o Estatístico Chefe do sistema NBA-MONITOR. Ca
 
 DIRETRIZES OBRIGATÓRIAS DE ANÁLISE:
 
-1. IMPACTO DE ESTRELAS (ELITE ONLY):
+1. MATEMÁTICA DE OVER/UNDER (DATABALLR 14D - PRIORIDADE MÁXIMA):
+   - Utilize as métricas avançadas dos últimos 14 dias (ORTG, DRTG, NET_EFF, True Shooting).
+   - Equação Base: Projete a pontuação cruzando o ORTG (Ataque) de um time contra o DRTG (Defesa) do outro, ajustado pelo Ritmo (Pace/Net Poss).
+   - Defesa em Colapso = DRTG > 116.0. Ataque de Elite = ORTG > 117.0.
+   - OVER RECOMENDADO apenas se ambos os times tiverem projeção matemática > 112 pontos cada e True Shooting (o_ts) > 57%.
+
+2. IMPACTO DE ESTRELAS (ELITE ONLY):
    - Só considere impacto de lesão se o jogador for ESTRELA DE ELITE (nota >= 7.0 ou All-Star)
-   - Jogadores role players não alteram significativamente o resultado
 
-2. FATORES CONTEXTUAIS:
-   - FATORES CASA: Considere distância de viagem do time visitante (jet lag, costas-a-costas)
-   - Times CONTENDERS (win% >= 60%) têm 78% de vitórias em casa
-   - Times FRACOS (win% <= 40%) têm apenas 36% de vitórias em casa
-   - Recalibração: Dê MAIOR PESO ao momento atual (últimos 5 jogos) vs season average
-
-3. ANÁLISE DEFENSIVA E PONTUAÇÃO:
-   - Defesa Ruim = Tendência FORTE de OVER
-   - Para apostar em OVER, verifique: "Os dois times têm estrelas para fazer +110 pontos cada?"
-   - Se não tiverem capacidade ofensiva confirmada, EVITE o OVER
-   - PACE e EFICIÊNCIA: Cruze eficiência de ataque vs defesa projetada
+3. FATORES CASA E MOMENTUM:
+   - Contenders (win% >= 60%) em casa: Vantagem massiva.
+   - Use o NET_EFF (Eficiência Líquida) recente para validar se o momentum de V/D é real ou sorte.
 
 4. HANDICAPS (REGRAS OBRIGATÓRIAS):
-   - Handicap +5.5 NÃO PRESTA (EVITE ESSA LINHA EXATA)
-   - PREFERÊNCIA: Busque linhas próximas a +10 (underdog claro) ou -5 (favorito sólido)
-   - Linhas entre +4 e +6 são armadilhas estatísticas
+   - EVITE linhas exatas de +5.5. Prefira extremidades (+10 underdog claro, -5 favorito sólido).
 
 SAÍDA OBRIGATÓRIA (JSON Estrito):
 {
@@ -350,35 +372,39 @@ SAÍDA OBRIGATÓRIA (JSON Estrito):
   "confianca": 0.0,
   "linha_seguranca_over": "string",
   "linha_seguranca_under": "string", 
-  "handicap_recomendado": "string (evite +5.5, prefira +10 ou -5)",
-  "alerta_lesao": "string (só se estrela elite >=7)",
-  "keyFactor": "string (momento, defesa, casa, etc)",
-  "detailedAnalysis": "string (máximo 200 chars, foco em edge identificado)"
+  "handicap_recomendado": "string",
+  "alerta_lesao": "string",
+  "keyFactor": "string (ex: ORTG vs DRTG cruzado indica Over, Edge de Net_Eff)",
+  "detailedAnalysis": "string (máximo 200 chars, foco no embate matemático dos últimos 14d)"
 }"""
 
-def analyze_game(game, inj_monitor, h2h, home_stats, away_stats, home_momentum, away_momentum, home_defense, away_defense):
+def analyze_game(game, inj_monitor, h2h, home_stats, away_stats, home_momentum, away_momentum, home_defense, away_defense, home_db, away_db):
     home = game['home']['displayName']
     away = game['away']['displayName']
     
-    # Só considera lesões de ELITE (nota >= 7)
-    home_elite_inj = inj_monitor.get_elite_injuries(home, min_rating=7.0)
-    away_elite_inj = inj_monitor.get_elite_injuries(away, min_rating=7.0)
+    # (Mantenha as extrações de lesões e recálculos de momentum originais aqui...)
     
-    # Análise de contender vs weak
-    home_advantage_factor = 0.78 if home_stats.get('is_contender') else (0.36 if home_stats.get('is_weak') else 0.60)
-    away_disadvantage = 0.36 if away_stats.get('is_weak') else 0.50
+    payload = {
+        "Confronto": f"{home} vs {away}",
+        "Metricas_Avancadas_14_Dias_Databallr": {
+            "Home_Adv": {
+                "ortg_ataque": home_db.get('ortg'),
+                "drtg_defesa": home_db.get('drtg'),
+                "eficiencia_liquida_net_eff": home_db.get('net_eff'),
+                "true_shooting_pct": home_db.get('o_ts'),
+                "rebote_ofensivo_pct": home_db.get('orb')
+            },
+            "Away_Adv": {
+                "ortg_ataque": away_db.get('ortg'),
+                "drtg_defesa": away_db.get('drtg'),
+                "eficiencia_liquida_net_eff": away_db.get('net_eff'),
+                "true_shooting_pct": away_db.get('o_ts'),
+                "rebote_ofensivo_pct": away_db.get('orb')
+            },
+            "Instrucao_Cruzamento": "Projete (Home ORTG vs Away DRTG) e (Away ORTG vs Home DRTG) para extrair a linha ideal de Over/Under."
+        },
+    }
     
-    # Momentum recalibrado (maior peso)
-    home_momentum_score = home_momentum.get('momentum_score', 0.5)
-    away_momentum_score = away_momentum.get('momentum_score', 0.5)
-    
-    # Análise defensiva para OVER/UNDER
-    home_def_rating = home_defense.get('defensive_rating', 0) or 0
-    away_def_rating = away_defense.get('defensive_rating', 0) or 0
-    bad_defense_threshold = 115  # Defesa ruim = rating alto
-    
-    home_bad_defense = home_def_rating > bad_defense_threshold if home_def_rating else False
-    away_bad_defense = away_def_rating > bad_defense_threshold if away_def_rating else False
     
     payload = {
         "Confronto": f"{home} vs {away}",
