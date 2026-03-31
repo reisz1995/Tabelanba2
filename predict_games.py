@@ -67,7 +67,7 @@ def with_retry(func, retries=3):
 # ==========================================
 def get_espn_games(date_obj):
     base_date = date_obj.strftime('%Y%m%d')
-    url = f"[https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=](https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=){base_date}"
+    url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=){base_date}"
     
     try:
         res = requests.get(url, timeout=10).json()
@@ -76,7 +76,7 @@ def get_espn_games(date_obj):
         if not events:
             next_day = (date_obj + timedelta(days=1)).strftime('%Y%m%d')
             print(f"⚠️ Vetor nulo detectado para {base_date}. Redirecionando radar para {next_day}...")
-            url = f"[https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=](https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=){next_day}"
+            url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=){next_day}"
             res = requests.get(url, timeout=10).json()
             events = res.get('events', [])
 
