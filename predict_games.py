@@ -482,7 +482,7 @@ if __name__ == "__main__":
                 "home_team": home_full,
                 "away_team": away_full,
                 "prediction": ai_result.get("palpite_principal", ""),
-                "confidence_score": float(ai_result.get("confianca", 0.0)),
+                "confidence": float(ai_result.get("confianca", 0.0)),
                 "over_line": ai_result.get("linha_seguranca_over", ""),
                 "under_line": ai_result.get("linha_seguranca_under", ""),
                 "handicap_line": ai_result.get("handicap_recomendado", ""),
