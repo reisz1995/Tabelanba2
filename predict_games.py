@@ -463,6 +463,66 @@ if __name__ == "__main__":
     print("🧠 Carregando tensores de eficiência Databallr (14 Dias)...")
     databallr_matrix = get_databallr_matrix()
     
-    predictions = []
+        predictions = []
 
-    for gam
+    for game in games:
+        home_full = game['home']['displayName']
+        away_full = game['away']['displayName']
+        game_id = f"{date_iso}_{home_full}_{away_full}".replace(" ", "_")
+        
+        print(f"⚡ Processando colisão: {home_full} vs {away_full}")
+        
+        home_db_stats = match_databallr_stats(home_full, databallr_matrix)
+        away_db_stats = match_databallr_stats(away_full, databallr_matrix)
+        
+        h2h_data = {"home_vs_away": extract_h2h(game['home']['id'], game['away']['id'])}
+        home_stats = get_team_stats(game['home']['id'])
+        away_stats = get_team_stats(game['away']['id'])
+        home_momentum = get_last_games(game['home']['id'], limit=5)
+        away_momentum = get_last_games(game['away']['id'], limit=5)
+        home_defense = get_team_defense_metrics(game['home']['id'])
+        away_defense = get_team_defense_metrics(game['away']['id'])
+        
+        ai_result = analyze_game(
+            game, inj_monitor, h2h_data, home_stats, away_stats,
+            home_momentum, away_momentum, home_defense, away_defense,
+            home_db_stats, away_db_stats
+        )
+        
+        if ai_result:
+            predictions.append({
+                "game_id": game_id,
+                "game_date": date_iso,
+                "home_team": home_full,
+                "away_team": away_full,
+                "prediction": ai_result.get("palpite_principal", ""),
+                "confidence_score": float(ai_result.get("confianca", 0.0)),
+                "over_line": ai_result.get("linha_seguranca_over", ""),
+                "under_line": ai_result.get("linha_seguranca_under", ""),
+                "handicap_line": ai_result.get("handicap_recomendado", ""),
+                "injury_alert": ai_result.get("alerta_lesao", "Não"),
+                "key_factor": ai_result.get("keyFactor", ""),
+                "momentum_data": h2h_data,
+                "defense_data": {
+                    "home_def_rating": home_defense.get('defensive_rating'),
+                    "away_def_rating": away_defense.get('defensive_rating')
+                }
+            })
+        time.sleep(1.5)
+
+    # ==========================================
+    # GESTÃO DE PÂNICO - FASE 2
+    # ==========================================
+    if games and not predictions:
+        print("⚠️ ALERTA CRÍTICO: Jogos detetados, mas a IA gerou zero matrizes preditivas.")
+        print("Possível colapso no parse JSON do Groq ou Rate Limit excedido.")
+        exit(1)
+
+    print(f"📦 Empacotando {len(predictions)} matrizes preditivas para injeção no Supabase...")
+    
+    try:
+        supabase.table("game_predictions").upsert(predictions).execute()
+        print("✅ SUCESSO ABSOLUTO: Matrizes termodinâmicas injetadas na tabela 'game_predictions'.")
+    except Exception as e:
+        print(f"❌ FALHA NO UPSERT: {e}")
+        exit(1)
