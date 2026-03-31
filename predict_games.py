@@ -478,7 +478,7 @@ if __name__ == "__main__":
         if ai_result:
             predictions.append({
                 "game_id": game_id,
-                "game_date": date_iso,
+                "date": date_iso,
                 "home_team": home_full,
                 "away_team": away_full,
                 "prediction": ai_result.get("palpite_principal", ""),
