@@ -1,4 +1,5 @@
 import os
+import sys # <--- ADICIONADO AQUI: Módulo de Sistema
 import json
 import time
 import requests
@@ -16,7 +17,7 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
 if not all([SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, GROQ_API_KEY]):
     print("❌ COLAPSO_DE_SISTEMA: Faltam variáveis de ambiente.")
-    exit(1)
+    sys.exit(1) # <--- CORRIGIDO AQUI
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 groq_client = Groq(api_key=GROQ_API_KEY)
@@ -425,3 +426,83 @@ def analyze_game(game, inj_monitor, h2h, home_stats, away_stats, home_momentum, 
     except Exception as e: 
         print(f"❌ Erro IA ({home} vs {away}): {e}")
         return None
+
+# ==========================================
+# 5. EXECUÇÃO PRINCIPAL (MAIN)
+# ==========================================
+if __name__ == "__main__":
+    date_obj = datetime.now(pytz.timezone('America/Sao_Paulo'))
+    date_iso = date_obj.strftime("%Y-%m-%d")
+    print(f"🕒 INICIANDO MOTOR PREDITIVO PARA A DATA: {date_iso}")
+
+    inj_monitor = InjuryMonitor("nba_injuries.json")
+    games = get_espn_games(date_obj)
+
+    if not games:
+        print("✅ STATUS VERDE: Ausência confirmada de jogos na NBA para esta janela de 48h.")
+        print("Finalizando operação pacificamente para preservar recursos computacionais.")
+        sys.exit(0) # <--- CORRIGIDO AQUI
+    
+    print("🧠 Carregando tensores de eficiência Databallr (14 Dias)...")
+    databallr_matrix = get_databallr_matrix()
+    
+    predictions = []
+
+    for game in games:
+        home_full = game['home']['displayName']
+        away_full = game['away']['displayName']
+        game_id = f"{date_iso}_{home_full}_{away_full}".replace(" ", "_")
+        
+        print(f"⚡ Processando colisão: {home_full} vs {away_full}")
+        
+        home_db_stats = match_databallr_stats(home_full, databallr_matrix)
+        away_db_stats = match_databallr_stats(away_full, databallr_matrix)
+        
+        h2h_data = {"home_vs_away": extract_h2h(game['home']['id'], game['away']['id'])}
+        home_stats = get_team_stats(game['home']['id'])
+        away_stats = get_team_stats(game['away']['id'])
+        home_momentum = get_last_games(game['home']['id'], limit=5)
+        away_momentum = get_last_games(game['away']['id'], limit=5)
+        home_defense = get_team_defense_metrics(game['home']['id'])
+        away_defense = get_team_defense_metrics(game['away']['id'])
+        
+        ai_result = analyze_game(
+            game, inj_monitor, h2h_data, home_stats, away_stats,
+            home_momentum, away_momentum, home_defense, away_defense,
+            home_db_stats, away_db_stats
+        )
+        
+        if ai_result:
+            predictions.append({
+                "game_id": game_id,
+                "game_date": date_iso,
+                "home_team": home_full,
+                "away_team": away_full,
+                "prediction": ai_result.get("palpite_principal", ""),
+                "confidence_score": float(ai_result.get("confianca", 0.0)),
+                "over_line": ai_result.get("linha_seguranca_over", ""),
+                "under_line": ai_result.get("linha_seguranca_under", ""),
+                "handicap_line": ai_result.get("handicap_recomendado", ""),
+                "injury_alert": ai_result.get("alerta_lesao", "Não"),
+                "key_factor": ai_result.get("keyFactor", ""),
+                "momentum_data": h2h_data,
+                "defense_data": {
+                    "home_def_rating": home_defense.get('defensive_rating'),
+                    "away_def_rating": away_defense.get('defensive_rating')
+                }
+            })
+        time.sleep(1.5)
+
+    if games and not predictions:
+        print("⚠️ ALERTA CRÍTICO: Jogos detetados, mas a IA gerou zero matrizes preditivas.")
+        print("Possível colapso no parse JSON do Groq ou Rate Limit excedido.")
+        sys.exit(1) # <--- CORRIGIDO AQUI
+
+    print(f"📦 Empacotando {len(predictions)} matrizes preditivas para injeção no Supabase...")
+    
+    try:
+        supabase.table("game_predictions").upsert(predictions).execute()
+        print("✅ SUCESSO ABSOLUTO: Matrizes termodinâmicas injetadas na tabela 'game_predictions'.")
+    except Exception as e:
+        print(f"❌ FALHA NO UPSERT: {e}")
+        sys.exit(1) # <--- CORRIGIDO AQUI
