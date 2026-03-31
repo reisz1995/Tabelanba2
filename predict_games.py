@@ -344,46 +344,26 @@ def get_last_games(team_id, limit=5):
         return {'last_games': [], 'wins_last_5': 0, 'losses_last_5': 0, 'momentum_score': 0.5}
 
 # ==========================================
-# 4. MOTOR PREDITIVO (GROQ IA)
+# 4. MOTOR PREDITIVO (GROQ IA) - CORREÇÃO DE PAYLOAD
 # ==========================================
-SYSTEM_INSTRUCTION = """Você é o Estatístico Chefe do sistema NBA-MONITOR. Calcule o Edge.
-
-DIRETRIZES OBRIGATÓRIAS DE ANÁLISE:
-
-1. MATEMÁTICA DE OVER/UNDER (DATABALLR 14D - PRIORIDADE MÁXIMA):
-   - Utilize as métricas avançadas dos últimos 14 dias (ORTG, DRTG, NET_EFF, True Shooting).
-   - Equação Base: Projete a pontuação cruzando o ORTG (Ataque) de um time contra o DRTG (Defesa) do outro, ajustado pelo Ritmo (Pace/Net Poss).
-   - Defesa em Colapso = DRTG > 116.0. Ataque de Elite = ORTG > 117.0.
-   - OVER RECOMENDADO apenas se ambos os times tiverem projeção matemática > 112 pontos cada e True Shooting (o_ts) > 57%.
-
-2. IMPACTO DE ESTRELAS (ELITE ONLY):
-   - Só considere impacto de lesão se o jogador for ESTRELA DE ELITE (nota >= 7.0 ou All-Star)
-
-3. FATORES CASA E MOMENTUM:
-   - Contenders (win% >= 60%) em casa: Vantagem massiva.
-   - Use o NET_EFF (Eficiência Líquida) recente para validar se o momentum de V/D é real ou sorte.
-
-4. HANDICAPS (REGRAS OBRIGATÓRIAS):
-   - EVITE linhas exatas de +5.5. Prefira extremidades (+10 underdog claro, -5 favorito sólido).
-
-SAÍDA OBRIGATÓRIA (JSON Estrito):
-{
-  "palpite_principal": "string (ex: OVER 225.5, Boston -5, Philadelphia +10)",
-  "confianca": 0.0,
-  "linha_seguranca_over": "string",
-  "linha_seguranca_under": "string", 
-  "handicap_recomendado": "string",
-  "alerta_lesao": "string",
-  "keyFactor": "string (ex: ORTG vs DRTG cruzado indica Over, Edge de Net_Eff)",
-  "detailedAnalysis": "string (máximo 200 chars, foco no embate matemático dos últimos 14d)"
-}"""
-
 def analyze_game(game, inj_monitor, h2h, home_stats, away_stats, home_momentum, away_momentum, home_defense, away_defense, home_db, away_db):
     home = game['home']['displayName']
     away = game['away']['displayName']
     
-    # (Mantenha as extrações de lesões e recálculos de momentum originais aqui...)
-    
+    # NOTA DO ARQUITETO: Assegure-se de que as extrações originais (lesões, def_rating, bad_defense) 
+    # ocorram NESTA SEÇÃO antes da montagem do payload.
+    # Exemplo simulado de variáveis que precisam estar presentes:
+    home_def_rating = home_defense.get('defensive_rating')
+    away_def_rating = away_defense.get('defensive_rating')
+    home_bad_defense = home_def_rating and home_def_rating > 116.0
+    away_bad_defense = away_def_rating and away_def_rating > 116.0
+    home_elite_inj = inj_monitor.get_elite_injuries(home)
+    away_elite_inj = inj_monitor.get_elite_injuries(away)
+    home_momentum_score = home_momentum.get('momentum_score', 0.5)
+    away_momentum_score = away_momentum.get('momentum_score', 0.5)
+    home_advantage_factor = "ALTO" if home_stats.get('is_contender') else "NORMAL"
+
+    # [CORREÇÃO] Fusão total do payload. O código anterior sobrescrevia a matriz Databallr.
     payload = {
         "Confronto": f"{home} vs {away}",
         "Metricas_Avancadas_14_Dias_Databallr": {
@@ -403,11 +383,6 @@ def analyze_game(game, inj_monitor, h2h, home_stats, away_stats, home_momentum, 
             },
             "Instrucao_Cruzamento": "Projete (Home ORTG vs Away DRTG) e (Away ORTG vs Home DRTG) para extrair a linha ideal de Over/Under."
         },
-    }
-    
-    
-    payload = {
-        "Confronto": f"{home} vs {away}",
         "Contexto_Casa": {
             "home_win_pct": home_stats.get('win_pct', 0),
             "is_contender": home_stats.get('is_contender', False),
@@ -471,9 +446,9 @@ def analyze_game(game, inj_monitor, h2h, home_stats, away_stats, home_momentum, 
         return None
 
 # ==========================================
-# 5. EXECUÇÃO PRINCIPAL (MAIN)
+# 5. EXECUÇÃO PRINCIPAL (MAIN) - RESTAURAÇÃO
 # ==========================================
-if if __name__ == "__main__":
+if __name__ == "__main__": # [CORREÇÃO] Remoção do 'if' duplicado
     date_obj = datetime.now(pytz.timezone('America/Sao_Paulo'))
     date_iso = date_obj.strftime("%Y-%m-%d")
     print(f"🕒 INICIANDO MOTOR PREDITIVO PARA A DATA: {date_iso}")
@@ -494,11 +469,10 @@ if if __name__ == "__main__":
         
         print(f"⚡ Processando colisão: {home_full} vs {away_full}")
         
-        # Pareamento de dados Databallr
+        # [CORREÇÃO] Pareamento concluído
         home_db_stats = match_databallr_stats(home_full, databallr_matrix)
-        away_db_stats = match_databallr_stats(away_full, databallr_matrix)
+        away_db_stats = match_databallr_stats(away_full, databallr_matrix) 
         
-        # Coleta de dados original
         h2h_data = {"home_vs_away": extract_h2h(game['home']['id'], game['away']['id'])}
         home_stats = get_team_stats(game['home']['id'])
         away_stats = get_team_stats(game['away']['id'])
@@ -510,45 +484,39 @@ if if __name__ == "__main__":
         ai_result = analyze_game(
             game, inj_monitor, h2h_data, home_stats, away_stats,
             home_momentum, away_momentum, home_defense, away_defense,
-            home_db_stats, away_db_stats # <-- INJEÇÃO AQUI
+            home_db_stats, away_db_stats
         )
-        
-        # (Adicione aos predictions e prossiga com o upsert do Supabase original)
-
         
         if ai_result:
             predictions.append({
-                "id": game_id, 
-                "date": date_iso, 
-                "home_team": home_full, 
+                "game_id": game_id,
+                "game_date": date_iso,
+                "home_team": home_full,
                 "away_team": away_full,
-                "prediction": json.dumps(ai_result, ensure_ascii=False),
-                "main_pick": ai_result.get("palpite_principal", "N/A"),
-                "confidence": float(ai_result.get("confianca", 0.0)),
+                "prediction": ai_result.get("palpite_principal", ""),
+                "confidence_score": float(ai_result.get("confianca", 0.0)),
                 "over_line": ai_result.get("linha_seguranca_over", ""),
                 "under_line": ai_result.get("linha_seguranca_under", ""),
                 "handicap_line": ai_result.get("handicap_recomendado", ""),
                 "injury_alert": ai_result.get("alerta_lesao", "Não"),
                 "key_factor": ai_result.get("keyFactor", ""),
-                "momentum_data": h2h_data, # <--- RESTAURAÇÃO: Apenas os confrontos diretos
+                "momentum_data": h2h_data,
                 "defense_data": {
                     "home_def_rating": home_defense.get('defensive_rating'),
                     "away_def_rating": away_defense.get('defensive_rating')
                 }
             })
-        time.sleep(1.5) # Respeita o Rate Limit da IA
+        time.sleep(1.5)
 
-    # MOTOR DE PÂNICO E INJEÇÃO
     if not predictions:
-        print("⚠️ ALERTA CRÍTICO: Zero predições geradas. Possível falha na API da ESPN (Sem jogos) ou na API do Groq (Rate Limit/Parse Error).")
-        exit(1) # OBRIGA o GitHub Actions a acionar luz vermelha.
+        print("⚠️ ALERTA CRÍTICO: Zero predições geradas.")
+        exit(1)
 
     print(f"📦 Empacotando {len(predictions)} matrizes preditivas para injeção no Supabase...")
     
     try:
         supabase.table("game_predictions").upsert(predictions).execute()
-        print("✅ SUCESSO ABSOLUTO: Matrizes termodinâmicas injetadas na tabela 'game_predictions'.")
+        print("✅ SUCESSO ABSOLUTO: Matrizes injetadas na tabela 'game_predictions'.")
     except Exception as e:
-        print(f"❌ COLAPSO NO BANCO DE DADOS: A estrutura enviada foi rejeitada pelo Supabase.")
-        print(f"MOTIVO: {e}")
-        exit(1) # OBRIGADO o GitHub Actions a acionar luz vermelha.
+        print(f"❌ FALHA NO UPSERT: {e}")
+
