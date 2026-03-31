@@ -28,14 +28,13 @@ jobs:
       - name: 🏀 SYNC CORE DATA
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          # INJEÇÃO DUPLA: Nutre tanto os scripts antigos como os novos
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY || secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_SERVICE_KEY }}
         run: |
           node scrape.js
           node importPlayers.js
-          node scraper_databallr.py
           node scripts/update-nba-stats.js
+
       
       # --- FASE 2: PYTHON (ESTATÍSTICO CHEFE & LESÕES) ---
       - name: 🐍 SETUP PYTHON
