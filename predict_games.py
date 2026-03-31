@@ -473,14 +473,18 @@ def analyze_game(game, inj_monitor, h2h, home_stats, away_stats, home_momentum, 
 # ==========================================
 # 5. EXECUÇÃO PRINCIPAL (MAIN)
 # ==========================================
-if __name__ == "__main__":
-    # GARANTIA TEMPORAL ABSOLUTA
+if if __name__ == "__main__":
     date_obj = datetime.now(pytz.timezone('America/Sao_Paulo'))
     date_iso = date_obj.strftime("%Y-%m-%d")
     print(f"🕒 INICIANDO MOTOR PREDITIVO PARA A DATA: {date_iso}")
 
     inj_monitor = InjuryMonitor("nba_injuries.json")
     games = get_espn_games(date_obj)
+    
+    # CARREGAMENTO DA MATRIZ AVANÇADA
+    print("🧠 Carregando tensores de eficiência Databallr (14 Dias)...")
+    databallr_matrix = get_databallr_matrix()
+    
     predictions = []
 
     for game in games:
@@ -490,7 +494,11 @@ if __name__ == "__main__":
         
         print(f"⚡ Processando colisão: {home_full} vs {away_full}")
         
-        # Coleta de dados enriquecida
+        # Pareamento de dados Databallr
+        home_db_stats = match_databallr_stats(home_full, databallr_matrix)
+        away_db_stats = match_databallr_stats(away_full, databallr_matrix)
+        
+        # Coleta de dados original
         h2h_data = {"home_vs_away": extract_h2h(game['home']['id'], game['away']['id'])}
         home_stats = get_team_stats(game['home']['id'])
         away_stats = get_team_stats(game['away']['id'])
@@ -500,16 +508,13 @@ if __name__ == "__main__":
         away_defense = get_team_defense_metrics(game['away']['id'])
         
         ai_result = analyze_game(
-            game, 
-            inj_monitor, 
-            h2h_data, 
-            home_stats, 
-            away_stats,
-            home_momentum,
-            away_momentum,
-            home_defense,
-            away_defense
+            game, inj_monitor, h2h_data, home_stats, away_stats,
+            home_momentum, away_momentum, home_defense, away_defense,
+            home_db_stats, away_db_stats # <-- INJEÇÃO AQUI
         )
+        
+        # (Adicione aos predictions e prossiga com o upsert do Supabase original)
+
         
         if ai_result:
             predictions.append({
