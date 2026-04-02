@@ -340,7 +340,7 @@ def extract_h2h(team_id, opponent_id) -> list:
         ]
 
         parsed = []
-        for g in h2h_raw[:2]:
+        for g in h2h_raw[:3]:
             comp = g['competitions'][0]['competitors']
             main = next((c for c in comp if c.get('id') == str(team_id)), None)
             opp = next((c for c in comp if c.get('id') != str(team_id)), None)
@@ -707,10 +707,7 @@ if __name__ == "__main__":
                 "home": home_momentum,
                 "away": away_momentum
             },
-            "defense_data": {
-                "home": home_defense,
-                "away": away_defense
-            }
+            "defense_data": h2h
         }
 
         try:
