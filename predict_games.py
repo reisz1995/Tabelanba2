@@ -219,7 +219,7 @@ def get_team_defense_metrics(team_id):
         return {'defensive_rating': None, 'pace': None, 'points_allowed': None}
 
 def extract_h2h(team_id, opponent_id):
-    url = f"[https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/](https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/){team_id}/schedule"
+    url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/](https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/){team_id}/schedule"
     def fetch_schedule():
         res = requests.get(url, timeout=10)
         res.raise_for_status() 
