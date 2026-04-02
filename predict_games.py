@@ -198,7 +198,7 @@ def get_team_defense_metrics(team_id):
         return None
 
     try:
-        url = f"[https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/](https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/){team_id}/statistics"
+        url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/](https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/){team_id}/statistics"
         res = requests.get(url, timeout=10)
         if res.status_code != 200: return {'defensive_rating': None, 'pace': None, 'points_allowed': None}
         
@@ -480,7 +480,8 @@ if __name__ == "__main__":
     for game in games:
         home_full = game['home']['displayName']
         away_full = game['away']['displayName']
-        game_id = f"{date_iso}_{home_full}_{away_full}".replace(" ", "_")
+        game_id = f"{date_iso}_{home_full}_vs_{away_full}".replace(" ", "_")
+
         
         print(f"⚡ Processando colisão: {home_full} vs {away_full}")
         
