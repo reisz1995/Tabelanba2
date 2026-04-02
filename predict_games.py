@@ -119,9 +119,9 @@ def get_market_odds(home_full, away_full):
         for row in res.data:
             if home_full in row.get("matchup", "") or away_full in row.get("matchup", ""):
                 return row
-    except:
-        pass
-    return "Mercado Indisponível"
+    except Exception as e:
+    print(f"⚠️ Odds indisponíveis: {e}")
+    return {"status": "indisponível"}
 
 def get_team_stats(team_id):
     try:
