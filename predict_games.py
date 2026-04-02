@@ -219,34 +219,45 @@ def get_team_defense_metrics(team_id):
         return {'defensive_rating': None, 'pace': None, 'points_allowed': None}
 
 def extract_h2h(team_id, opponent_id):
-    url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/](https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/){team_id}/schedule"
+    # CORREÇÃO: URL higienizada e livre de artefatos Markdown
+    url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/{team_id}/schedule"
+    
     def fetch_schedule():
         res = requests.get(url, timeout=10)
         res.raise_for_status() 
         return res.json().get('events', [])
 
     try:
+        # Dependência: A função with_retry deve estar ativa no escopo global
         events = with_retry(fetch_schedule, retries=3)
-        if not events: return []
+        if not events: 
+            return []
         
-        past_games = [e for e in events if e['competitions'][0]['status']['type']['state'] == 'post']
-        past_games.sort(key=lambda x: x['date'], reverse=True)
-        h2h_raw = [g for g in past_games if any(c['id'] == str(opponent_id) for c in g['competitions'][0]['competitors'])]
+        past_games = [e for e in events if e.get('competitions', [{}])[0].get('status', {}).get('type', {}).get('state') == 'post']
+        past_games.sort(key=lambda x: x.get('date', ''), reverse=True)
+        
+        h2h_raw = [g for g in past_games if any(c.get('id') == str(opponent_id) for c in g.get('competitions', [{}])[0].get('competitors', []))]
         
         parsed = []
         for g in h2h_raw[:2]:
             comp = g['competitions'][0]['competitors']
-            main = next(c for c in comp if c['id'] == str(team_id))
-            opp = next(c for c in comp if c['id'] != str(team_id))
+            main = next((c for c in comp if c.get('id') == str(team_id)), None)
+            opp = next((c for c in comp if c.get('id') != str(team_id)), None)
+            
+            if not main or not opp:
+                continue
+                
             dt = datetime.strptime(g['date'], "%Y-%m-%dT%H:%MZ")
             
             def get_score(c):
                 s = c.get('score', 0)
-                if isinstance(s, dict): return int(s.get('value', 0))
+                if isinstance(s, dict): 
+                    return int(s.get('value', 0))
                 return int(s) if s else 0
                 
             main_s = get_score(main)
             opp_s = get_score(opp)
+            
             parsed.append({
                 "date": dt.strftime("%d/%m"),
                 "result": 'V' if main.get('winner') else 'D',
@@ -254,41 +265,59 @@ def extract_h2h(team_id, opponent_id):
             })
         return parsed
     except Exception as e:
+        # Silenciamento estratégico no log para evitar saturação em I/O
         return []
 
 def get_last_games(team_id, limit=5):
-    url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/](https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/){team_id}/schedule"
+    # CORREÇÃO: URL higienizada
+    url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/{team_id}/schedule"
+    
     try:
         res = requests.get(url, timeout=10)
+        res.raise_for_status()
         events = res.json().get('events', [])
-        past_games = [e for e in events if e['competitions'][0]['status']['type']['state'] == 'post']
-        past_games.sort(key=lambda x: x['date'], reverse=True)
+        
+        past_games = [e for e in events if e.get('competitions', [{}])[0].get('status', {}).get('type', {}).get('state') == 'post']
+        past_games.sort(key=lambda x: x.get('date', ''), reverse=True)
         
         last_games = []
         wins = 0
         losses = 0
         
         for g in past_games[:limit]:
-            comp = g['competitions'][0]
-            team_comp = next((c for c in comp['competitors'] if c['id'] == str(team_id)), None)
+            comp = g.get('competitions', [{}])[0]
+            team_comp = next((c for c in comp.get('competitors', []) if c.get('id') == str(team_id)), None)
+            
             if team_comp:
                 is_winner = team_comp.get('winner', False)
-                if is_winner: wins += 1
-                else: losses += 1
+                if is_winner: 
+                    wins += 1
+                else: 
+                    losses += 1
+                    
                 last_games.append({
                     'result': 'V' if is_winner else 'D',
-                    'date': g['date'][:10],
+                    'date': g.get('date', '')[:10],
                     'home_away': 'CASA' if team_comp.get('homeAway') == 'home' else 'FORA'
                 })
+        
+        total_games = wins + losses
+        momentum_score = (wins / total_games) if total_games > 0 else 0.5
         
         return {
             'last_games': last_games,
             'wins_last_5': wins,
             'losses_last_5': losses,
-            'momentum_score': wins / (wins + losses) if (wins + losses) > 0 else 0.5
+            'momentum_score': float(f"{momentum_score:.3f}") # Precisão flutuante limpa
         }
     except Exception as e:
-        return {'last_games': [], 'wins_last_5': 0, 'losses_last_5': 0, 'momentum_score': 0.5}
+        return {
+            'last_games': [], 
+            'wins_last_5': 0, 
+            'losses_last_5': 0, 
+            'momentum_score': 0.5
+        }
+        
 
 # ==========================================
 # 4. MOTOR PREDITIVO (GROQ IA)
