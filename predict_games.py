@@ -53,20 +53,32 @@ def extract_pure_json(raw_response):
         clean_text = clean_text[:-3]
     return clean_text.strip()
 
-def with_retry(func, retries=3):
+def with_retry(func, retries=3, base_delay=1.5):
+    last_exc = None
     for attempt in range(retries + 1):
         try:
             return func()
         except Exception as e:
-            if attempt == retries:
-                raise e
-            time.sleep(1.5)
+            last_exc = e
+            if attempt < retries:
+            time.sleep(base_delay * (2 ** attempt))  # backoff exponencial
+    raise last_exc
+
 
 # ==========================================
 # 3. INTERFACES DE DADOS (ESPN & SUPABASE)
 # ==========================================
 def get_espn_games(date_obj):
-    base_date = date_obj.strftime('%Y%m%d')
+    base_date = date_obj.strftime('%Y%m%def with_retry(func, retries=3, base_delay=1.5):
+    last_exc = None
+    for attempt in range(retries + 1):
+        try:
+            return func()
+        except Exception as e:
+            last_exc = e
+            if attempt < retries:
+                time.sleep(base_delay * (2 ** attempt))  # backoff exponencial
+    raise last_excd')
     url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={base_date}"
     
     try:
