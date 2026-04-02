@@ -257,7 +257,7 @@ def extract_h2h(team_id, opponent_id):
         return []
 
 def get_last_games(team_id, limit=5):
-    url = f"[https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/](https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/){team_id}/schedule"
+    url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/](https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/){team_id}/schedule"
     try:
         res = requests.get(url, timeout=10)
         events = res.json().get('events', [])
