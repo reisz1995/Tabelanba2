@@ -13,16 +13,17 @@ jobs:
       - name: Checkout do repositório
         uses: actions/checkout@v4
 
-      - name: Configurar Node.js
+      - name: Configurar ambiente Node.js v20
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - name: Instalar dependências
-        run: npm install
+      - name: Injeção forçada de dependências
+        run: npm install cheerio @supabase/supabase-js dotenv
 
-      - name: Executar scraper
+      - name: Executar rotina de extração e persistência
         run: node scrape.js
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          
