@@ -218,6 +218,17 @@ async function atualizarNBA() {
     throw insertError;
   }
 
+  // [HUD: ROTINA DE AUTOMAÇÃO CONTÍNUA DO PACE]
+  console.log("🔄 Executando espelhamento do Pace Factor (RPC)...");
+  const { error: rpcError } = await supabase.rpc('sincronizar_pace');
+
+  if (rpcError) {
+    console.error("❌ Falha crítica no espelhamento térmico:", rpcError.message);
+  } else {
+    console.log("✅ Pace Factor propagado com sucesso para matriz avançada!");
+  }
+
+
   const semPace = dados.filter((d) => d.pace === null).map((d) => d.time);
   if (semPace.length) {
     console.warn(`⚠️  Times sem Pace (${semPace.length}): ${semPace.join(", ")}`);
