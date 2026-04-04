@@ -115,8 +115,31 @@ const DISPLAY_TO_HOLLINGER = {
 
 function resolverNome(displayName) {
   return DISPLAY_TO_HOLLINGER[displayName] ?? displayName.split(" ")[0];
-}
 
+  // [HUD: MÓDULO DE RESOLUÇÃO DE NOMES TOLERANTE A FALHAS]
+
+function resolverNome(displayName, paceMap) {
+  const chavePrimaria = DISPLAY_TO_HOLLINGER[displayName];
+  
+  // 1. Busca estrita na malha de dados (Otimização O(1))
+  if (chavePrimaria && paceMap.has(chavePrimaria)) {
+    return chavePrimaria;
+  }
+
+  // 2. Busca heurística (Extrai a última palavra do vetor de texto: "Clippers")
+  const identificadorRadical = displayName.split(" ").pop();
+  const chaveHeuristica = Array.from(paceMap.keys()).find(k => 
+    k.includes(identificadorRadical)
+  );
+  
+  if (chaveHeuristica) {
+    return chaveHeuristica;
+  }
+
+  // 3. Padrão de fallback original
+  return displayName.split(" ")[0];
+}
+  
 async function atualizarNBA() {
   console.log("⏳ Buscando classificação NBA (ESPN Standings API)...");
 
@@ -146,9 +169,9 @@ async function atualizarNBA() {
       if (s.abbreviation) stats[s.abbreviation] = s.displayValue || s.value;
       if (s.type)         stats[s.type]         = s.displayValue || s.value;
     });
-
+    
     const displayName   = e.team.displayName;
-    const hollingerNome = resolverNome(displayName);
+    const hollingerNome = resolverNome(displayName, paceMap);
     const pace          = paceMap.get(hollingerNome) ?? null;
 
     if (pace === null) {
