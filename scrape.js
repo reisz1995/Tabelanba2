@@ -113,10 +113,6 @@ const DISPLAY_TO_HOLLINGER = {
   "Atlanta Hawks":         "Atlanta",
 };
 
-function resolverNome(displayName) {
-  return DISPLAY_TO_HOLLINGER[displayName] ?? displayName.split(" ")[0];
-
-  // [HUD: MÓDULO DE RESOLUÇÃO DE NOMES TOLERANTE A FALHAS]
 
 function resolverNome(displayName, paceMap) {
   const chavePrimaria = DISPLAY_TO_HOLLINGER[displayName];
