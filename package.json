@@ -7,6 +7,7 @@
     "opencode": "node src/opencode.js"
   },
   "dependencies": {
+    "cheerio": "^1.0.0",
     "@supabase/supabase-js": "^2.90.1",
     "dotenv": "^17.2.3"
   }
