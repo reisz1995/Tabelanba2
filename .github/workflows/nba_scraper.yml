@@ -1,4 +1,4 @@
-name: Atualizar Dados NBA
+name: Atualizar news NBA
 
 on:
   schedule:
