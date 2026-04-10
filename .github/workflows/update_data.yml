@@ -3,7 +3,7 @@ name: ATUALIZAÇÃO DIÁRIA DA NBA (V4)
 on:
   schedule:
     # DISPARO ÚNICO ÀS 09:00 
-    - cron: '0 09 * * *'
+    - cron: '0 11 * * *'
   workflow_dispatch:
 
 jobs:
