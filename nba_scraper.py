@@ -16,8 +16,19 @@ from bs4 import BeautifulSoup
 from supabase import create_client, Client
 
 # ─── Config ────────────────────────────────────────────────────────────────────
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_KEY = os.environ["SUPABASE_KEY"]
+def _require_env(name: str) -> str:
+    val = os.environ.get(name, "").strip()
+    if not val:
+        raise EnvironmentError(
+            f"\n\n❌ Missing required secret: {name}\n"
+            f"   → Go to GitHub repo → Settings → Secrets and variables → Actions\n"
+            f"   → Add a secret named '{name}' with the correct value.\n"
+            f"   → For Supabase: Project Settings → API → service_role key\n"
+        )
+    return val
+
+SUPABASE_URL = _require_env("SUPABASE_URL")
+SUPABASE_KEY = _require_env("SUPABASE_KEY")
 
 BASE_URL = "https://scores24.live"
 NBA_PREDICTIONS_URL = f"{BASE_URL}/pt/basketball/l-usa-nba/predictions"
