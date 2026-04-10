@@ -4,3 +4,7 @@ nba_api
 groq
 pandas
 python-dotenv
+httpx>=0.27.0
+beautifulsoup4>=4.12.0
+lxml>=5.2.0          # fast XML/HTML parser for bs4
+supabase>=2.4.0
