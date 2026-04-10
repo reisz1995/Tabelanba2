@@ -1,4 +1,4 @@
-name: Atualizar news NBA
+name: Atualizar news Dados NBA
 
 on:
   schedule:
@@ -26,5 +26,6 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
         run: python nba_scraper.py
         
