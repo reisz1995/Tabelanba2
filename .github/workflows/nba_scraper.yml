@@ -1,37 +1,29 @@
-name: Debug NBA Scraper
+name: Atualizar Dados NBA
 
 on:
+  schedule:
+    - cron: '0 10 * * *'
   workflow_dispatch:
 
 jobs:
-  debug:
+  scrape:
     runs-on: ubuntu-latest
     
     steps:
       - uses: actions/checkout@v4
       
-      - name: Listar arquivos
-        run: ls -la
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
       
-      - name: Verificar Python
-        run: |
-          python --version
-          which python
-      
-      - name: Instalar e testar dependências
+      - name: Instalar dependências
         run: |
           pip install httpx beautifulsoup4 supabase
-          python -c "
-          import httpx
-          from bs4 import BeautifulSoup
-          from supabase import create_client
-          print('Todas as dependências OK')
-          "
       
-      - name: Tentar rodar scraper
+      - name: Executar Scraper NBA
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        run: |
-          python nba_scraper.py || echo "Erro ao executar"
-          
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python nba_scraper.py
