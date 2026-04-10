@@ -20,12 +20,12 @@ jobs:
       
       - name: Instalar dependências
         run: |
-          pip install nba-api beautifulsoup4 supabase httpx
+          pip install httpx beautifulsoup4 supabase
       
       - name: Executar Scraper NBA
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-          NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
+          SCRAPINGANT_API_KEY: ${{ secrets.SCRAPINGANT_API_KEY }}
         run: python nba_scraper.py
         
