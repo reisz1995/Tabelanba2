@@ -1,6 +1,6 @@
 """
-NBA Daily Scraper
-Usa ScrapingAnt (alternativa gratuita) para acessar scores24.live
+NBA Scraper - Versão Corrigida
+Limpa duplicatas e normaliza dados
 """
 
 import os
@@ -8,7 +8,8 @@ import re
 import logging
 import httpx
 import time
-from datetime import datetime, timezone
+import hashlib
+from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from bs4 import BeautifulSoup
 from supabase import create_client, Client
@@ -28,6 +29,7 @@ SCRAPINGANT_API_KEY = os.environ.get("SCRAPINGANT_API_KEY", "")
 BASE_URL = "https://scores24.live"
 NBA_PREDICTIONS_URL = f"{BASE_URL}/pt/basketball/l-usa-nba/predictions"
 
+BRT = ZoneInfo("America/Sao_Paulo")
 ET = ZoneInfo("America/New_York")
 
 logging.basicConfig(
@@ -36,254 +38,276 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
-}
-
 
 # ─── Supabase client ───────────────────────────────────────────────────────────
 def get_supabase() -> Client:
     return create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 
-# ─── ScrapingAnt Functions ────────────────────────────────────────────────────
+# ─── Proxy Functions ───────────────────────────────────────────────────────────
 def get_scrapingant_url(target_url: str, proxy_country: str = "us") -> str:
-    """
-    Gera URL do ScrapingAnt para proxy
-    Documentação: https://scrapingant.com/docs/
-    """
     if not SCRAPINGANT_API_KEY:
         return target_url
-    
-    # URL encode do target
     encoded_url = quote(target_url, safe='')
-    
-    # Construir URL do ScrapingAnt
     return (
         f"https://api.scrapingant.com/v2/general?"
         f"url={encoded_url}&"
         f"x-api-key={SCRAPINGANT_API_KEY}&"
-        f"proxy_country={proxy_country}&"
-        f"wait_for_selector=body"  # Esperar o body carregar
+        f"proxy_country={proxy_country}"
     )
 
 
 def fetch_html(url: str, retries: int = 3) -> str | None:
-    """
-    Busca HTML usando ScrapingAnt como proxy
-    """
     for attempt in range(1, retries + 1):
         try:
-            # Usar ScrapingAnt se disponível
             target_url = get_scrapingant_url(url) if SCRAPINGANT_API_KEY else url
             
-            with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=45) as client:
-                log.info(f"Fetching: {url[:50]}... (ScrapingAnt: {bool(SCRAPINGANT_API_KEY)})")
-                
+            with httpx.Client(follow_redirects=True, timeout=45) as client:
+                log.info(f"Fetching: {url[:50]}...")
                 resp = client.get(target_url)
                 resp.raise_for_status()
-                
-                # ScrapingAnt retorna o HTML diretamente
                 return resp.text
                 
-        except httpx.HTTPStatusError as e:
-            log.warning(f"Tentativa {attempt}/{retries} - HTTP {e.response.status_code}: {e}")
-            if attempt < retries:
-                time.sleep(2 ** attempt)
         except Exception as e:
             log.warning(f"Tentativa {attempt}/{retries} falhou: {e}")
             if attempt < retries:
                 time.sleep(2 ** attempt)
     
-    log.error(f"Todas as tentativas falharam para {url}")
     return None
+
+
+# ─── Helper Functions ───────────────────────────────────────────────────────────
+def clean_team_name(name: str) -> str:
+    """Limpa nome do time removendo sujeiras"""
+    # Remover hashtags e tudo depois
+    name = name.split("#")[0].strip()
+    # Remover "Trends" ou variações
+    name = re.sub(r'\s*trends?$', '', name, flags=re.I).strip()
+    # Remover múltiplos espaços
+    name = re.sub(r'\s+', ' ', name).strip()
+    return name
+
+
+def parse_time_to_brt(time_str: str, date_str: str) -> tuple[str, str]:
+    """
+    Converte horário do scores24 (provavelmente PT/ET) para BRT
+    Retorna: (hora_brt, data_ajustada)
+    """
+    if not time_str:
+        return "20:00", date_str
+    
+    try:
+        # Parse do horário
+        hour, minute = map(int, time_str.split(":"))
+        
+        # scores24 mostra horário de Portugal (PT) ou Eastern (ET)
+        # PT = UTC+0 (ou UTC+1 em horário de verão)
+        # ET = UTC-5 (ou UTC-4 em horário de verão)
+        # BRT = UTC-3 (sempre)
+        
+        # Assumindo que é Portugal (UTC+0)
+        # Diferença: PT (0) para BRT (-3) = -3 horas
+        hour_brt = hour - 3
+        
+        # Ajustar data se necessário
+        date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+        
+        if hour_brt < 0:
+            hour_brt += 24
+            date_obj -= timedelta(days=1)
+        
+        return f"{hour_brt:02d}:{minute:02d}", date_obj.strftime("%Y-%m-%d")
+        
+    except Exception as e:
+        log.warning(f"Erro ao converter horário {time_str}: {e}")
+        return "20:00", date_str
+
+
+def get_team_tri_code(team_name: str) -> str:
+    """Retorna código de 3 letras do time"""
+    team_mapping = {
+        "atlanta hawks": "ATL", "boston celtics": "BOS", "brooklyn nets": "BKN",
+        "charlotte hornets": "CHA", "chicago bulls": "CHI", "cleveland cavaliers": "CLE",
+        "dallas mavericks": "DAL", "denver nuggets": "DEN", "detroit pistons": "DET",
+        "golden state warriors": "GSW", "houston rockets": "HOU", "indiana pacers": "IND",
+        "la clippers": "LAC", "la lakers": "LAL", "los angeles lakers": "LAL",
+        "memphis grizzlies": "MEM", "miami heat": "MIA", "milwaukee bucks": "MIL",
+        "minnesota timberwolves": "MIN", "new orleans pelicans": "NOP", "ny knicks": "NYK",
+        "new york knicks": "NYK", "oklahoma city thunder": "OKC", "orlando magic": "ORL",
+        "philadelphia 76ers": "PHI", "phoenix suns": "PHX", "portland trail blazers": "POR",
+        "sacramento kings": "SAC", "san antonio spurs": "SAS", "toronto raptors": "TOR",
+        "utah jazz": "UTA", "washington wizards": "WAS",
+    }
+    
+    name_clean = team_name.lower().strip()
+    return team_mapping.get(name_clean, "NBA")
+
+
+def get_pt_name(team_name: str) -> str:
+    """Retorna nome em português quando disponível"""
+    pt_names = {
+        "Pistons": "Pistões", "Hornets": "Hornets", "Wizards": "Wizards",
+        "Heat": "Heat", "Hawks": "Hawks", "Cavaliers": "Cavaliers",
+        "Pacers": "Pacers", "76ers": "76ers", "Celtics": "Celtics",
+        "Pelicans": "Pelicans", "Knicks": "Knicks", "Raptors": "Raptors",
+        "Bulls": "Bulls", "Nets": "Nets", "Mavericks": "Mavericks",
+        "Spurs": "Spurs", "Nuggets": "Nuggets", "Thunder": "Thunder",
+        "Warriors": "Warriors", "Lakers": "Lakers", "Rockets": "Rockets",
+        "Trail Blazers": "Trail Blazers", "Kings": "Kings", "Suns": "Suns",
+        "Jazz": "Jazz", "Grizzlies": "Grizzlies", "Timberwolves": "Timberwolves",
+        "Bucks": "Bucks", "Magic": "Magic", "Clippers": "Clippers",
+    }
+    
+    for en, pt in pt_names.items():
+        if en in team_name:
+            return pt
+    return team_name
 
 
 # ─── Parsers ───────────────────────────────────────────────────────────────────
 def parse_game_list(html: str) -> list[dict]:
-    """Parse upcoming + recent game cards from the NBA predictions page."""
+    """Parse games com limpeza de dados"""
     soup = BeautifulSoup(html, "html.parser")
     games = []
 
+    # Pattern para URLs de jogos (ignorar #trends e duplicatas)
     game_pattern = re.compile(r"/pt/basketball/m-(\d{2}-\d{2}-\d{4})-(.+?)(?:-prediction)?$")
+    
     seen_slugs: set[str] = set()
 
     for a_tag in soup.find_all("a", href=game_pattern):
-        href = a_tag["href"]
+        href = a_tag.get("href", "")
+        
+        # Ignorar URLs com #trends ou outros fragmentos
+        if "#" in href:
+            continue
+            
         match = game_pattern.search(href)
         if not match:
             continue
 
-        slug = match.group(0).rstrip("/")
-        if slug in seen_slugs:
+        # Criar slug limpo (sem /pt/basketball/ e sem -prediction)
+        full_slug = match.group(0)
+        if full_slug in seen_slugs:
             continue
-        seen_slugs.add(slug)
+        seen_slugs.add(full_slug)
+        
+        # Criar slug simplificado para o banco
+        slug_clean = full_slug.replace("/pt/basketball/", "").replace("-prediction", "")
 
-        date_str = match.group(1)
+        date_str = match.group(1)  # DD-MM-YYYY
         teams_slug = match.group(2)
 
+        # Parse da data
         try:
-            game_date = datetime.strptime(date_str, "%d-%m-%Y").date()
+            date_obj = datetime.strptime(date_str, "%d-%m-%Y")
+            game_date = date_obj.strftime("%Y-%m-%d")
         except ValueError:
             continue
 
+        # Extrair nomes dos times
         team_imgs = a_tag.find_all("img")
         team_names_from_alt = [img.get("alt", "").strip() for img in team_imgs if img.get("alt")]
 
         if len(team_names_from_alt) >= 2:
-            home_team = team_names_from_alt[0]
-            away_team = team_names_from_alt[1]
+            home_team = clean_team_name(team_names_from_alt[0])
+            away_team = clean_team_name(team_names_from_alt[1])
         else:
+            # Fallback: extrair do slug
             parts = teams_slug.split("-")
+            # Remover "hornets", "detroit", etc. e pegar apenas nomes válidos
             mid = len(parts) // 2
-            home_team = " ".join(p.title() for p in parts[:mid])
-            away_team = " ".join(p.title() for p in parts[mid:])
+            home_team = clean_team_name(" ".join(p.title() for p in parts[:mid]))
+            away_team = clean_team_name(" ".join(p.title() for p in parts[mid:]))
 
+        # Extrair horário
         time_match = re.search(r"(\d{2}:\d{2})", a_tag.get_text())
-        game_time = time_match.group(1) if time_match else None
+        time_raw = time_match.group(1) if time_match else None
+        
+        # Converter para BRT
+        time_brt, date_adjusted = parse_time_to_brt(time_raw, game_date)
 
+        # Extrair confidence
         confidence_match = re.search(r"(\d{1,3})%", a_tag.get_text())
         confidence_pct = int(confidence_match.group(1)) if confidence_match else None
 
+        # URLs
         full_url = BASE_URL + href if href.startswith("/") else href
-
+        
+        # Criar URL da NBA no formato correto
+        home_tri = get_team_tri_code(home_team)
+        away_tri = get_team_tri_code(away_team)
+        nba_slug = f"{away_tri.lower()}-vs-{home_tri.lower()}-0022500000"  # ID genérico
+        
         games.append({
-            "game_date": game_date.isoformat(),
-            "game_time_et": game_time,
+            "slug": slug_clean,
+            "game_date": date_adjusted,
+            "game_time_et": time_raw,  # Horário original
+            "game_time_brt": time_brt,  # Horário convertido
             "home_team": home_team,
             "away_team": away_team,
-            "slug": slug,
+            "home_team_pt": get_pt_name(home_team),
+            "away_team_pt": get_pt_name(away_team),
+            "home_tri": home_tri,
+            "away_tri": away_tri,
             "source_url": full_url,
+            "nba_game_url": f"https://www.nba.com/game/{nba_slug}",
             "confidence_pct": confidence_pct,
+            "game_status": "Scheduled",
             "scraped_at": datetime.now(timezone.utc).isoformat(),
         })
 
-    log.info(f"Parsed {len(games)} games from scores24")
+    log.info(f"Parsed {len(games)} unique games")
     return games
 
 
-def parse_game_trends(html: str, game_slug: str) -> list[dict]:
-    """Parse statistical trends/tendencies for a single game page."""
-    soup = BeautifulSoup(html, "html.parser")
-    trends = []
-
-    # Buscar por diferentes padrões de tendências
-    selectors = [
-        ("div", r"trend|fact|stat|prediction"),
-        ("section", r"trend|fact|stat"),
-        ("li", r"prediction|trend"),
-    ]
-
-    for tag, pattern in selectors:
-        for element in soup.find_all(tag, class_=re.compile(pattern, re.I)):
-            text = element.get_text(separator=" ", strip=True)
-            if not text or len(text) < 20:
-                continue
-
-            # Extrair odds
-            odds_match = re.search(r"([+-]\d{2,4})", text)
-            odds = odds_match.group(1) if odds_match else None
-
-            # Extrair ratio (ex: "10 dos 11")
-            ratio_match = re.search(r"(\d+)\s+dos\s+(\d+)", text)
-            occurrences = f"{ratio_match.group(1)}/{ratio_match.group(2)}" if ratio_match else None
-
-            # Detectar categoria
-            category = "unknown"
-            text_lower = text.lower()
-            if any(k in text_lower for k in ["total", "pontos", "over", "under", "mais de", "menos de"]):
-                category = "total"
-            elif any(k in text_lower for k in ["handicap", "hándicap", "spread"]):
-                category = "handicap"
-            elif any(k in text_lower for k in ["vence", "vitória", "vencedor", "moneyline"]):
-                category = "result"
-
-            if odds or occurrences or len(text) > 50:
-                trends.append({
-                    "game_slug": game_slug,
-                    "category": category,
-                    "description": text[:500],
-                    "odds": odds,
-                    "occurrences": occurrences,
-                    "scraped_at": datetime.now(timezone.utc).isoformat(),
-                })
-
-    # Remover duplicatas
-    seen = set()
-    unique = []
-    for t in trends:
-        key = t["description"][:100]
-        if key not in seen:
-            seen.add(key)
-            unique.append(t)
-
-    log.info(f"Parsed {len(unique)} trends for {game_slug}")
-    return unique
-
-
-# ─── Supabase upserts ──────────────────────────────────────────────────────────
+# ─── Supabase Functions ─────────────────────────────────────────────────────────
 def upsert_games(sb: Client, games: list[dict]) -> None:
     if not games:
         return
-    result = sb.table("nba_games_schedule").upsert(games, on_conflict="slug").execute()
-    log.info(f"✓ {len(games)} games saved")
+    
+    # Remover duplicatas por slug antes de enviar
+    seen_slugs = set()
+    unique_games = []
+    for g in games:
+        if g["slug"] not in seen_slugs:
+            seen_slugs.add(g["slug"])
+            unique_games.append(g)
+    
+    result = sb.table("nba_games_schedule").upsert(unique_games, on_conflict="slug").execute()
+    log.info(f"✓ {len(unique_games)} games saved")
 
 
-def upsert_trends(sb: Client, trends: list[dict]) -> None:
-    if not trends:
-        return
-    for t in trends:
-        t["trend_key"] = f"{t['game_slug']}::{t['description'][:80]}"
-
-    result = sb.table("nba_game_trends").upsert(trends, on_conflict="trend_key").execute()
-    log.info(f"✓ {len(trends)} trends saved")
-
-
-# ─── Main pipeline ─────────────────────────────────────────────────────────────
+# ─── Main ──────────────────────────────────────────────────────────────────────
 def run():
-    log.info("═══ NBA Daily Scraper (ScrapingAnt) starting ═══")
+    log.info("═══ NBA Scraper (Corrigido) starting ═══")
     
     if not SCRAPINGANT_API_KEY:
         log.error("❌ SCRAPINGANT_API_KEY não configurado!")
-        log.info("Configure o secret no GitHub Actions para usar o proxy")
         return
     
     sb = get_supabase()
 
-    # 1. Fetch main predictions page via ScrapingAnt
-    log.info("Fetching NBA predictions page via ScrapingAnt...")
+    # Limpar dados antigos duplicados primeiro (opcional)
+    log.info("Limpando duplicatas antigas...")
+    try:
+        sb.table("nba_games_schedule").delete().neq("id", 0).execute()
+        log.info("✓ Tabela limpa")
+    except Exception as e:
+        log.warning(f"Não foi possível limpar tabela: {e}")
+
+    # Fetch e parse
     html = fetch_html(NBA_PREDICTIONS_URL)
     if not html:
-        log.error("Failed to fetch predictions page. Aborting.")
+        log.error("Failed to fetch page")
         return
 
-    # 2. Parse game list
     games = parse_game_list(html)
-    if not games:
-        log.warning("No games found in page")
-        return
-    
     upsert_games(sb, games)
 
-    # 3. For each game: fetch detailed page → parse trends
-    all_trends = []
-    for i, game in enumerate(games):
-        detail_url = game["source_url"].replace("-prediction", "")
-        log.info(f"[{i+1}/{len(games)}] Fetching: {game['away_team']} vs {game['home_team']}")
-        
-        detail_html = fetch_html(detail_url)
-        if detail_html:
-            trends = parse_game_trends(detail_html, game["slug"])
-            all_trends.extend(trends)
-        
-        # Rate limiting: esperar entre requisições
-        time.sleep(1.5)
-
-    upsert_trends(sb, all_trends)
-
-    log.info("═══ Scraper finished successfully ═══")
-    log.info(f"Summary: {len(games)} games | {len(all_trends)} trends")
+    log.info("═══ Finished ═══")
+    for g in games[:5]:  # Mostrar primeiros 5
+        log.info(f"{g['game_time_brt']} BRT - {g['away_team_pt']} vs {g['home_team_pt']}")
 
 
 if __name__ == "__main__":
