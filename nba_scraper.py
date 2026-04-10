@@ -1,6 +1,6 @@
 """
-NBA Daily Scraper - Jogos e Prévias
-Usa NewsAPI para notícias reais da NBA
+NBA Daily Scraper - Jogos e Prévias Detalhadas
+Usa NewsAPI + ESPN API para notícias completas
 """
 
 import os
@@ -24,7 +24,7 @@ def _require_env(name: str) -> str:
 
 SUPABASE_URL = _require_env("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = _require_env("SUPABASE_SERVICE_KEY")
-NEWSAPI_KEY = os.environ.get("NEWSAPI_KEY", "")  # Opcional, mas recomendado
+NEWSAPI_KEY = os.environ.get("NEWSAPI_KEY", "")
 
 BRT = ZoneInfo("America/Sao_Paulo")
 ET = ZoneInfo("America/New_York")
@@ -37,7 +37,7 @@ log = logging.getLogger(__name__)
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
 }
 
 
@@ -48,13 +48,13 @@ def get_supabase() -> Client:
 
 # ─── Helper Functions ───────────────────────────────────────────────────────────
 def get_team_names() -> dict:
-    """Retorna dicionário com nomes dos times em português/inglês"""
+    """Retorna dicionário com nomes dos times"""
     return {
         "ATL": ("Hawks", "Hawks"), "BOS": ("Celtics", "Celtics"),
         "BKN": ("Nets", "Nets"), "CHA": ("Hornets", "Hornets"),
         "CHI": ("Bulls", "Bulls"), "CLE": ("Cavaliers", "Cavaliers"),
         "DAL": ("Mavericks", "Mavericks"), "DEN": ("Nuggets", "Nuggets"),
-        "DET": ("Pistons", "Pistões"), "GSW": ("Warriors", "Warriors"),
+        "DET": ("Pistons", "Pistons"), "GSW": ("Warriors", "Warriors"),
         "HOU": ("Rockets", "Rockets"), "IND": ("Pacers", "Pacers"),
         "LAC": ("Clippers", "Clippers"), "LAL": ("Lakers", "Lakers"),
         "MEM": ("Grizzlies", "Grizzlies"), "MIA": ("Heat", "Heat"),
@@ -69,7 +69,7 @@ def get_team_names() -> dict:
 
 
 def convert_to_brt(game_time_utc: str) -> str:
-    """Converte horário UTC para BRT (UTC-3)"""
+    """Converte horário UTC para BRT"""
     try:
         utc_time = datetime.fromisoformat(game_time_utc.replace("Z", "+00:00"))
         brt_time = utc_time.astimezone(BRT)
@@ -98,17 +98,12 @@ def fetch_today_games() -> list[dict]:
             slug = f"{away_tri.lower()}-vs-{home_tri.lower()}-{game_id}"
             game_time_brt = convert_to_brt(game.get("gameTimeUTC", ""))
             
-            home_name_pt = team_names.get(home_tri, (home_tri, home_tri))[1]
-            away_name_pt = team_names.get(away_tri, (away_tri, away_tri))[1]
-            
             game_info = {
                 "slug": slug,
                 "game_date": datetime.now(BRT).strftime("%Y-%m-%d"),
                 "game_time_brt": game_time_brt,
                 "home_team": game["homeTeam"]["teamName"],
-                "home_team_pt": home_name_pt,
                 "away_team": game["awayTeam"]["teamName"],
-                "away_team_pt": away_name_pt,
                 "home_tri": home_tri,
                 "away_tri": away_tri,
                 "game_status": game["gameStatusText"],
@@ -117,7 +112,7 @@ def fetch_today_games() -> list[dict]:
             }
             games.append(game_info)
         
-        log.info(f"Encontrados {len(games)} jogos para hoje")
+        log.info(f"Encontrados {len(games)} jogos")
         return games
         
     except Exception as e:
@@ -125,196 +120,162 @@ def fetch_today_games() -> list[dict]:
         return []
 
 
-# ─── NewsAPI Functions ─────────────────────────────────────────────────────────
-def fetch_newsapi_articles(query: str = "NBA", days_back: int = 3) -> list[dict]:
-    """Busca notícias da NewsAPI"""
-    if not NEWSAPI_KEY:
-        log.warning("NEWSAPI_KEY não configurada")
-        return []
-    
-    try:
-        log.info(f"Buscando notícias na NewsAPI: '{query}'")
-        
-        # Calcular data de início (últimos X dias)
-        from_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
-        
-        url = "https://newsapi.org/v2/everything"
-        params = {
-            "q": query,
-            "from": from_date,
-            "language": "en",
-            "sortBy": "relevancy",
-            "pageSize": 30,
-            "apiKey": NEWSAPI_KEY,
-        }
-        
-        with httpx.Client(timeout=30) as client:
-            resp = client.get(url, params=params)
-            resp.raise_for_status()
-            data = resp.json()
-            
-            if data.get("status") != "ok":
-                log.error(f"NewsAPI erro: {data.get('message')}")
-                return []
-            
-            news_items = []
-            for article in data.get("articles", []):
-                title = article.get("title", "")
-                if not title or title == "[Removed]":
-                    continue
-                
-                # Extrair times mencionados
-                mentioned_teams = extract_teams_from_title(title + " " + article.get("description", ""))
-                
-                news_items.append({
-                    "news_key": f"newsapi-{hash(title) % 10000000}",
-                    "title": title,
-                    "url": article.get("url"),
-                    "summary": article.get("description", "")[:400] if article.get("description") else "",
-                    "published_at": article.get("publishedAt"),
-                    "mentioned_teams": mentioned_teams,
-                    "source": article.get("source", {}).get("name", "NewsAPI"),
-                    "scraped_at": datetime.now(timezone.utc).isoformat(),
-                })
-            
-            log.info(f"NewsAPI: {len(news_items)} notícias encontradas")
-            return news_items
-            
-    except Exception as e:
-        log.error(f"Erro NewsAPI: {e}")
-        return []
-
-
-def fetch_top_nba_headlines() -> list[dict]:
-    """Busca headlines principais da NBA"""
+# ─── News Functions ──────────────────────────────────────────────────────────────
+def fetch_game_preview_news(team1: str, team2: str, days_back: int = 7) -> list[dict]:
+    """Busca notícias específicas de prévia para um confronto"""
     if not NEWSAPI_KEY:
         return []
     
-    try:
-        url = "https://newsapi.org/v2/top-headlines"
-        params = {
-            "q": "NBA basketball",
-            "country": "us",
-            "category": "sports",
-            "pageSize": 20,
-            "apiKey": NEWSAPI_KEY,
-        }
-        
-        with httpx.Client(timeout=30) as client:
-            resp = client.get(url, params=params)
-            data = resp.json()
+    # Keywords mais específicas para prévias
+    keywords = [
+        f"{team1} {team2} preview",
+        f"{team1} {team2} matchup",
+        f"{team1} vs {team2}",
+        f"{team1} injury report",
+        f"{team2} injury report",
+    ]
+    
+    all_news = []
+    from_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+    
+    for keyword in keywords:
+        try:
+            url = "https://newsapi.org/v2/everything"
+            params = {
+                "q": keyword,
+                "from": from_date,
+                "language": "en",
+                "sortBy": "relevancy",
+                "pageSize": 10,
+                "apiKey": NEWSAPI_KEY,
+            }
             
-            if data.get("status") != "ok":
-                return []
-            
-            news_items = []
-            for article in data.get("articles", []):
-                title = article.get("title", "")
-                if not title:
-                    continue
+            with httpx.Client(timeout=30) as client:
+                resp = client.get(url, params=params)
+                data = resp.json()
                 
-                news_items.append({
-                    "news_key": f"headline-{hash(title) % 10000000}",
-                    "title": title,
-                    "url": article.get("url"),
-                    "summary": article.get("description", "")[:400] if article.get("description") else "",
-                    "published_at": article.get("publishedAt"),
-                    "mentioned_teams": extract_teams_from_title(title),
-                    "source": article.get("source", {}).get("name", "NewsAPI"),
-                    "scraped_at": datetime.now(timezone.utc).isoformat(),
-                })
+                if data.get("status") == "ok":
+                    for article in data.get("articles", []):
+                        title = article.get("title", "")
+                        if not title or title == "[Removed]":
+                            continue
+                        
+                        # Verificar se menciona ambos os times
+                        title_lower = title.lower()
+                        if team1.lower() in title_lower or team2.lower() in title_lower:
+                            all_news.append({
+                                "news_key": f"preview-{hash(title) % 10000000}",
+                                "title": title,
+                                "url": article.get("url"),
+                                "summary": article.get("description", "")[:500] if article.get("description") else "",
+                                "published_at": article.get("publishedAt"),
+                                "source": article.get("source", {}).get("name", "NewsAPI"),
+                                "scraped_at": datetime.now(timezone.utc).isoformat(),
+                            })
             
-            return news_items
+            time.sleep(0.3)  # Rate limiting
             
-    except Exception as e:
-        log.error(f"Erro headlines: {e}")
-        return []
+        except Exception as e:
+            log.warning(f"Erro ao buscar '{keyword}': {e}")
+    
+    # Remover duplicatas
+    seen = set()
+    unique_news = []
+    for n in all_news:
+        if n["title"] not in seen:
+            seen.add(n["title"])
+            unique_news.append(n)
+    
+    return unique_news
 
 
-def extract_teams_from_title(text: str) -> list[str]:
-    """Extrai nomes de times do texto"""
-    team_names = get_team_names()
-    found_teams = []
-    text_lower = text.lower()
+def fetch_nba_com_game_preview(game_slug: str, max_retries: int = 2) -> dict:
+    """Tenta extrair prévia diretamente da página do jogo no NBA.com"""
+    url = f"https://www.nba.com/game/{game_slug}"
     
-    for tri, (en_name, pt_name) in team_names.items():
-        if en_name.lower() in text_lower:
-            found_teams.append(en_name)
+    for attempt in range(max_retries):
+        try:
+            with httpx.Client(headers=HEADERS, timeout=20, follow_redirects=True) as client:
+                resp = client.get(url)
+                
+                if resp.status_code == 200:
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    
+                    # Buscar elementos de prévia
+                    preview = soup.find("div", class_=re.compile(r"preview|article|content", re.I))
+                    title = soup.find("h1")
+                    
+                    if preview:
+                        text = preview.get_text(separator=" ", strip=True)
+                        # Limitar tamanho
+                        if len(text) > 1000:
+                            text = text[:997] + "..."
+                        
+                        return {
+                            "news_key": f"nba-com-{hash(game_slug) % 10000000}",
+                            "title": title.get_text(strip=True) if title else f"Game Preview: {game_slug}",
+                            "url": url,
+                            "summary": text,
+                            "published_at": datetime.now(timezone.utc).isoformat(),
+                            "source": "NBA.com",
+                            "scraped_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                    
+        except Exception as e:
+            log.warning(f"Tentativa {attempt + 1} falhou para {url}: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(1)
     
-    return list(set(found_teams))  # Remover duplicatas
+    return None
 
 
-def match_news_to_games(games: list[dict], all_news: list[dict]) -> list[dict]:
-    """Associa notícias aos jogos baseado nos times mencionados"""
-    matched_news = []
+def fetch_espn_game_story(game_slug: str) -> dict:
+    """Busca história do jogo na ESPN"""
+    # Extrair IDs dos times do slug
+    parts = game_slug.split("-")
+    if len(parts) >= 4:
+        away = parts[0]
+        home = parts[2]
+        
+        # Buscar na ESPN
+        try:
+            espn_url = f"https://www.espn.com/nba/game/_/gameId/{parts[-1]}"
+            
+            with httpx.Client(headers=HEADERS, timeout=20) as client:
+                resp = client.get(espn_url)
+                
+                if resp.status_code == 200:
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    
+                    # Buscar artigo de prévia
+                    article = soup.find("article") or soup.find("div", class_=re.compile(r"story|article", re.I))
+                    
+                    if article:
+                        title_elem = soup.find("h1")
+                        title = title_elem.get_text(strip=True) if title_elem else f"{away.upper()} vs {home.upper()}"
+                        
+                        text = article.get_text(separator=" ", strip=True)[:800]
+                        
+                        return {
+                            "news_key": f"espn-{hash(game_slug) % 10000000}",
+                            "title": title,
+                            "url": espn_url,
+                            "summary": text,
+                            "published_at": datetime.now(timezone.utc).isoformat(),
+                            "source": "ESPN",
+                            "scraped_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                        
+        except Exception as e:
+            log.warning(f"Erro ESPN: {e}")
     
-    for game in games:
-        home_team = game["home_team"]
-        away_team = game["away_team"]
-        home_tri = game["home_tri"]
-        away_tri = game["away_tri"]
-        
-        game_teams = {
-            home_team.lower(), away_team.lower(),
-            home_tri.lower(), away_tri.lower()
-        }
-        
-        best_match = None
-        best_score = 0
-        
-        for news in all_news:
-            news_teams = set(t.lower() for t in news.get("mentioned_teams", []))
-            
-            # Calcular score de matching
-            score = 0
-            if home_team.lower() in news["title"].lower():
-                score += 2
-            if away_team.lower() in news["title"].lower():
-                score += 2
-            if home_tri.lower() in news["title"].lower():
-                score += 1
-            if away_tri.lower() in news["title"].lower():
-                score += 1
-            
-            # Se menciona ambos os times, é uma ótima match
-            if len(news_teams) >= 2 and len(news_teams.intersection(game_teams)) >= 2:
-                score += 5
-            
-            if score > best_score:
-                best_score = score
-                best_match = news
-        
-        # Se encontrou uma boa notícia, associar ao jogo
-        if best_match and best_score >= 2:
-            game_news = best_match.copy()
-            game_news["game_slug"] = game["slug"]
-            game_news["team"] = f"{game['away_team_pt']} vs {game['home_team_pt']}"
-            matched_news.append(game_news)
-        else:
-            # Criar notícia genérica se não encontrou
-            matched_news.append({
-                "news_key": f"preview-{game['slug']}",
-                "game_slug": game["slug"],
-                "team": f"{game['away_team_pt']} vs {game['home_team_pt']}",
-                "title": f"Prévia: {game['away_team_pt']} vs {game['home_team_pt']}",
-                "url": game["nba_game_url"],
-                "summary": f"Confronto entre {game['away_team_pt']} e {game['home_team_pt']} às {game['game_time_brt']} BRT.",
-                "source": "NBA.com",
-                "scraped_at": datetime.now(timezone.utc).isoformat(),
-            })
-    
-    return matched_news
+    return None
 
 
 # ─── Supabase Functions ─────────────────────────────────────────────────────────
 def upsert_games(sb: Client, games: list[dict]) -> None:
     if not games:
         return
-    
-    for game in games:
-        game["home_team"] = game.get("home_team_pt", game["home_team"])
-        game["away_team"] = game.get("away_team_pt", game["away_team"])
-        game["game_time_et"] = game.get("game_time_brt")
     
     result = sb.table("nba_games_schedule").upsert(games, on_conflict="slug").execute()
     log.info(f"✓ {len(games)} jogos salvos")
@@ -336,60 +297,70 @@ def upsert_news(sb: Client, news: list[dict]) -> None:
 
 # ─── Main ──────────────────────────────────────────────────────────────────────
 def run():
-    log.info("═══ NBA Scraper - Jogos e Prévias (NewsAPI) ═══")
+    log.info("═══ NBA Scraper - Prévias Detalhadas ═══")
     sb = get_supabase()
 
-    # 1. Buscar jogos do dia
+    # 1. Buscar jogos
     games = fetch_today_games()
     if not games:
-        log.warning("Nenhum jogo encontrado para hoje")
+        log.warning("Nenhum jogo encontrado")
         return
     
     upsert_games(sb, games)
 
-    # 2. Buscar notícias da NewsAPI
+    # 2. Buscar notícias detalhadas para cada jogo
     all_news = []
     
-    if NEWSAPI_KEY:
-        # Buscar notícias gerais da NBA
-        nba_news = fetch_newsapi_articles("NBA basketball", days_back=2)
-        all_news.extend(nba_news)
-        
-        # Buscar headlines
-        headlines = fetch_top_nba_headlines()
-        all_news.extend(headlines)
-        
-        # Buscar notícias específicas para cada confronto
-        for game in games:
-            query = f"{game['away_team']} {game['home_team']} NBA"
-            matchup_news = fetch_newsapi_articles(query, days_back=5)
-            all_news.extend(matchup_news)
-            time.sleep(0.5)  # Rate limiting
-        
-        # Remover duplicatas
-        seen = set()
-        unique_news = []
-        for n in all_news:
-            key = n["title"]
-            if key not in seen:
-                seen.add(key)
-                unique_news.append(n)
-        all_news = unique_news
-        
-        log.info(f"Total de notícias únicas: {len(all_news)}")
-    else:
-        log.warning("NEWSAPI_KEY não configurada - usando notícias genéricas")
-
-    # 3. Associar notícias aos jogos
-    game_news = match_news_to_games(games, all_news)
-    upsert_news(sb, game_news)
-
-    # Log resumo
-    log.info("\n═══ RESUMO DO DIA ═══")
     for game in games:
-        log.info(f"{game['game_time_brt']} - {game['away_team_pt']} vs {game['home_team_pt']}")
+        home = game["home_team"]
+        away = game["away_team"]
+        slug = game["slug"]
+        
+        log.info(f"Buscando notícias para: {away} vs {home}")
+        
+        # Buscar na NewsAPI com keywords específicas
+        preview_news = fetch_game_preview_news(away, home, days_back=5)
+        
+        # Se não encontrou notícias detalhadas, tentar scraping direto
+        if not preview_news or len(preview_news) == 0:
+            nba_preview = fetch_nba_com_game_preview(slug)
+            if nba_preview:
+                preview_news.append(nba_preview)
+            
+            espn_preview = fetch_espn_game_story(slug)
+            if espn_preview:
+                preview_news.append(espn_preview)
+        
+        # Se ainda não tem notícias, criar genérica
+        if not preview_news:
+            preview_news.append({
+                "news_key": f"fallback-{slug}",
+                "game_slug": slug,
+                "team": f"{away} vs {home}",
+                "title": f"Game Preview: {away} vs {home}",
+                "url": game["nba_game_url"],
+                "summary": f"Matchup between {away} and {home} scheduled for today. Check NBA.com for latest updates on injuries, standings, and player matchups.",
+                "source": "NBA.com",
+                "scraped_at": datetime.now(timezone.utc).isoformat(),
+            })
+        
+        # Associar game_slug a todas as notícias deste jogo
+        for news in preview_news:
+            news["game_slug"] = slug
+            news["team"] = f"{away} vs {home}"
+        
+        all_news.extend(preview_news)
+        time.sleep(0.5)  # Rate limiting gentil
+
+    upsert_news(sb, all_news)
+
+    # Resumo
+    log.info("\n═══ RESUMO ═══")
+    for game in games:
+        game_news_count = len([n for n in all_news if n.get("game_slug") == game["slug"]])
+        log.info(f"{game['game_time_brt']} - {game['away_team']} vs {game['home_team']} ({game_news_count} notícias)")
     
-    log.info(f"\nTotal: {len(games)} jogos | {len(game_news)} notícias")
+    log.info(f"\nTotal: {len(games)} jogos | {len(all_news)} notícias")
 
 
 if __name__ == "__main__":
