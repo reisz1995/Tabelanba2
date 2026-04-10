@@ -1,28 +1,30 @@
-name: Update NBA Injuries
+name: Atualizar Dados NBA
+
 on:
   schedule:
-    - cron: '0 10 * * *'
-  workflow_dispatch:  # Executar manualmente
+    - cron: '0 10 * * *'  # 10h UTC diariamente
+  workflow_dispatch:
 
 jobs:
-  update:
+  scrape:
     runs-on: ubuntu-latest
+    
     steps:
-      - uses: actions/checkout@v2
-
-      - name: Setup Python
-        uses: actions/setup-python@v2
+      - uses: actions/checkout@v4
+      
+      - name: Configurar Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11'
+          cache: 'pip'
       
-      - name: Install dependencies
+      - name: Instalar dependências
         run: |
-          pip install requests supabase
+          pip install httpx beautifulsoup4 supabase
       
-      # Passo ÚNICO e corrigido:
-      # Roda o script com as chaves de acesso
-      - name: Run NBA Injuries Sync
+      - name: Executar Scraper NBA
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: python3 nba_injuries_api.py
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python nba_scraper.py
+        
