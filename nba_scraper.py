@@ -1,5 +1,5 @@
 """
-NBA Scraper - Arquitetura Replicante
+NBA Scraper - Matriz Replicante (Modo D0)
 Ingestão de metadados de partidas e extração vetorial JSON-LD para prognósticos.
 Otimizado para baixa latência de memória (MX Linux / Android hosts).
 """
@@ -61,7 +61,7 @@ def fetch_html(url: str, retries: int = 3) -> str | None:
         try:
             target_url = get_scrapingant_url(url) if SCRAPINGANT_API_KEY else url
             with httpx.Client(follow_redirects=True, timeout=45) as client:
-                log.info(f"Interceptando: {url[:60]}...")
+                log.info(f"Interceptando nó: {url[:60]}...")
                 resp = client.get(target_url)
                 resp.raise_for_status()
                 return resp.text
@@ -115,7 +115,7 @@ def parse_time_to_brt(time_str: str, date_str: str) -> tuple[str, str]:
             date_obj -= timedelta(days=1)
         return f"{hour_brt:02d}:{minute:02d}", date_obj.strftime("%Y-%m-%d")
     except Exception as exc:
-        log.warning(f"Falha na conversão temporal {time_str}: {exc}")
+        log.warning(f"Falha na conversão temporal de telemetria {time_str}: {exc}")
         return "20:00", date_str
 
 def get_team_tri_code(team_name: str) -> str:
@@ -152,7 +152,7 @@ def get_pt_name(team_name: str) -> str:
             return pt
     return team_name
 
-def parse_game_list(html: str) -> list[dict]:
+def parse_game_list(html: str, target_date: str = None) -> list[dict]:
     soup = BeautifulSoup(html, "html.parser")
     games = []
     game_pattern = re.compile(r"/pt/basketball/m-(\d{2}-\d{2}-\d{4})-(.+?)(?:-prediction)?$")
@@ -182,6 +182,15 @@ def parse_game_list(html: str) -> list[dict]:
         except ValueError:
             continue
 
+        time_match = re.search(r"(\d{2}:\d{2})", a_tag.get_text())
+        time_raw = time_match.group(1) if time_match else None
+        
+        time_brt, date_adjusted = parse_time_to_brt(time_raw, game_date)
+
+        # ─── BARREIRA TEMPORAL ───
+        if target_date and date_adjusted != target_date:
+            continue
+
         team_imgs = a_tag.find_all("img")
         team_names_from_alt = [img.get("alt", "").strip() for img in team_imgs if img.get("alt")]
 
@@ -193,10 +202,6 @@ def parse_game_list(html: str) -> list[dict]:
             mid = len(parts) // 2
             home_team = clean_team_name(" ".join(p.title() for p in parts[:mid]))
             away_team = clean_team_name(" ".join(p.title() for p in parts[mid:]))
-
-        time_match = re.search(r"(\d{2}:\d{2})", a_tag.get_text())
-        time_raw = time_match.group(1) if time_match else None
-        time_brt, date_adjusted = parse_time_to_brt(time_raw, game_date)
 
         confidence_match = re.search(r"(\d{1,3})%", a_tag.get_text())
         confidence_pct = int(confidence_match.group(1)) if confidence_match else None
@@ -222,11 +227,11 @@ def parse_game_list(html: str) -> list[dict]:
             "nba_game_url": f"https://www.nba.com/game/{nba_slug}",
             "confidence_pct": confidence_pct,
             "game_status": "Scheduled",
-            "tactical_prediction": None,  # Placeholder a ser preenchido
+            "tactical_prediction": None,  # Preenchimento assíncrono posterior
             "scraped_at": datetime.now(timezone.utc).isoformat(),
         })
 
-    log.info(f"Parsing inicial concluído: {len(games)} entidades extraídas.")
+    log.info(f"Filtro temporal aplicado. Entidades extraídas para {target_date or 'ALL'}: {len(games)}.")
     return games
 
 
@@ -241,37 +246,38 @@ def upsert_games(sb: Client, games: list[dict]) -> None:
             seen_slugs.add(g["slug"])
             unique_games.append(g)
     
+    # Executa a gravação ignorando o RLS, assumindo chave de serviço
     sb.table("nba_games_schedule").upsert(unique_games, on_conflict="slug").execute()
-    log.info(f"✓ Sincronização atômica finalizada: {len(unique_games)} registros persistidos.")
+    log.info(f"✓ Sincronização atómica finalizada: {len(unique_games)} registos persistidos.")
 
 
 # ─── Sequenciador Principal ──────────────────────────────────────────────────
 def run():
-    log.info("═══ Inicializando Sequência Scraper Replicante ═══")
+    log.info("═══ Inicializando Sequência Scraper Replicante (Modo D0) ═══")
     
     if not SCRAPINGANT_API_KEY:
-        log.error("❌ Falha de ignição: SCRAPINGANT_API_KEY ausente.")
+        log.error("❌ Falha de ignição: SCRAPINGANT_API_KEY ausente na interface.")
         return
     
     sb = get_supabase()
-
-    log.info("Limpando sobreposições de dados obsoletos na interface...")
-    try:
-        sb.table("nba_games_schedule").delete().neq("id", 0).execute()
-        log.info("✓ Espaço de memória relacional otimizado.")
-    except Exception as exc:
-        log.warning(f"Erro na limpeza de nós da tabela: {exc}")
 
     html = fetch_html(NBA_PREDICTIONS_URL)
     if not html:
         log.error("Falha crítica no nó raiz (Predictions HTML).")
         return
 
-    # Estágio 1: Extração Estrutural Base
-    games = parse_game_list(html)
+    # ─── CALIBRAÇÃO DE MATRIZ TEMPORAL ───
+    today_target = datetime.now(BRT).strftime("%Y-%m-%d")
+    
+    # Estágio 1: Extração Filtrada
+    games = parse_game_list(html, target_date=today_target)
+    
+    if not games:
+        log.info(f"Nenhum vetor de partida detetado para o ciclo {today_target}. Suspendendo operação.")
+        return
 
-    # Estágio 2: Enriquecimento Assíncrono/Iterativo (Prognósticos)
-    log.info("Iniciando injeção do texto tático preditivo em instâncias individuais...")
+    # Estágio 2: Enriquecimento Assíncrono
+    log.info(f"Iniciando injeção tática nos {len(games)} vetores isolados...")
     for g in games:
         target_prediction_url = g["source_url"]
         if not target_prediction_url.endswith("-prediction"):
@@ -281,16 +287,16 @@ def run():
         prediction_text = extract_tactical_prediction(detail_html)
         
         g["tactical_prediction"] = prediction_text
-        # Limitador de requisição opcional para evitar banimentos agressivos se não usar proxy rotativo
         time.sleep(0.5)
 
     # Estágio 3: Persistência
     upsert_games(sb, games)
 
     log.info("═══ Operação Concluída ═══")
-    for g in games[:3]:
+    for g in games:
         hud_status = "Com Previsão" if g["tactical_prediction"] else "Sem Previsão"
-        log.info(f"[{g['game_time_brt']} BRT] {g['away_team_tri']} vs {g['home_team_tri']} | {hud_status}")
+        log.info(f"[{g['game_date']} | {g['game_time_brt']} BRT] {g['away_tri']} vs {g['home_tri']} | {hud_status}")
 
 if __name__ == "__main__":
     run()
+        
