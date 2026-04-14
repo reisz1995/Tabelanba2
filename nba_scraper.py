@@ -1,9 +1,9 @@
 """
-NBA Scraper - Replicante V6.5.3 (Async Engine + Fix Nome Groq)
+NBA Scraper - Replicante V6.5.4 (Fix Extração de Texto + JS Rendering)
 Correções:
-  - [FIX] Nome correto: groq_insight (não grok_insight)
-  - [FIX] Seletores de texto atualizados
-  - [FIX] Schema flexível
+  - [FIX] browser=true para renderizar JavaScript
+  - [FIX] Seletores específicos do scores24
+  - [FIX] Extração via JSON-LD como fallback
 """
 
 import os
@@ -24,7 +24,7 @@ from supabase import create_client, Client
 # ─── Logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] [NBA-V6.5.3] %(message)s",
+    format="%(asctime)s [%(levelname)s] [NBA-V6.5.4] %(message)s",
 )
 log = logging.getLogger(__name__)
 
@@ -145,7 +145,6 @@ class GameData(BaseModel):
     game_status: str = "Scheduled"
     scraped_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     
-    # Campos JSON
     odds: Optional[OddsData] = None
     h2h: Optional[H2HData] = None
     home_form: Optional[TeamForm] = None
@@ -156,9 +155,8 @@ class GameData(BaseModel):
     away_stats: Optional[TeamStats] = None
     editorial_pick: Optional[EditorialPick] = None
     
-    # Campos de texto
     tactical_prediction: Optional[str] = None
-    groq_insight: Optional[GroqInsight] = None  # NOME CORRETO
+    groq_insight: Optional[GroqInsight] = None
 
     def to_groq_prompt(self) -> str:
         """Gera prompt para Groq."""
@@ -213,12 +211,12 @@ class NetworkClient:
         self.client    = httpx.AsyncClient(follow_redirects=True, timeout=60)
         self.semaphore = asyncio.Semaphore(Config.CONCURRENCY_LIMIT)
 
-    async def fetch(self, url: str, retries: int = 2) -> Optional[str]:
+    async def fetch(self, url: str, retries: int = 2, use_browser: bool = False) -> Optional[str]:
         async with self.semaphore:
             for attempt in range(retries + 1):
                 try:
-                    target = self._prepare_url(url)
-                    log.info(f"Fetch: {url[:60]}...")
+                    target = self._prepare_url(url, use_browser=use_browser)
+                    log.info(f"Fetch: {url[:60]}... (browser={use_browser})")
                     resp = await self.client.get(target)
                     
                     if resp.status_code == 409 and attempt < retries:
@@ -280,14 +278,16 @@ class NetworkClient:
             log.error(f"Erro Groq: {e}")
             return None
 
-    def _prepare_url(self, url: str) -> str:
+    def _prepare_url(self, url: str, use_browser: bool = False) -> str:
         if not Config.SCRAPINGANT_KEY:
             return url
         encoded = quote(url, safe="")
+        # NOVO: use_browser=True para renderizar JavaScript
+        browser_param = "true" if use_browser else "false"
         return (
             f"https://api.scrapingant.com/v2/general?"
             f"url={encoded}&x-api-key={Config.SCRAPINGANT_KEY}&"
-            f"proxy_country=us&browser=false"
+            f"proxy_country=us&browser={browser_param}"
         )
 
     async def close(self):
@@ -443,7 +443,11 @@ class NBAExtractor:
         game.home_news, game.away_news = self._extract_news(soup, game)
         game.home_stats, game.away_stats = self._extract_stats(soup, game)
         game.editorial_pick = self._extract_editorial(soup)
-        game.tactical_prediction = self._extract_text_v2(soup)
+        game.tactical_prediction = self._extract_text_v3(soup)
+        
+        # Se não encontrou texto, tenta JSON-LD
+        if not game.tactical_prediction:
+            game.tactical_prediction = self._extract_json_ld(soup)
         
         log.info(f"  → Texto: {len(game.tactical_prediction) if game.tactical_prediction else 0} chars | "
                 f"Odds: {bool(game.odds)} | H2H: {bool(game.h2h)}")
@@ -615,29 +619,46 @@ class NBAExtractor:
         except:
             return None
 
-    def _extract_text_v2(self, soup: BeautifulSoup) -> Optional[str]:
-        """Extração de texto com múltiplos seletores."""
+    def _extract_text_v3(self, soup: BeautifulSoup) -> Optional[str]:
+        """NOVO: Extração com seletores específicos do scores24."""
         try:
-            # Estratégia 1: data-testid="DisplayContent"
+            # Estratégia 1: Seção de previsão específica
+            for header_text in ["Previsão da Redação", "Suns vs", "Blazers vs", "Hornets vs", "Heat vs"]:
+                header = soup.find(string=re.compile(header_text, re.I))
+                if header:
+                    container = header.find_parent(["div", "section", "article"])
+                    if container:
+                        log.info(f"  → Usando seletor: header '{header_text}'")
+                        text = self._process_text_container(container, min_length=100)
+                        if text:
+                            return text
+            
+            # Estratégia 2: data-testid="DisplayContent"
             container = soup.find(attrs={"data-testid": "DisplayContent"})
             if container:
                 log.info("  → Usando seletor: data-testid=DisplayContent")
-                return self._process_text_container(container)
+                text = self._process_text_container(container)
+                if text:
+                    return text
             
-            # Estratégia 2: article ou main
-            container = soup.find("article") or soup.find("main")
-            if container:
-                log.info("  → Usando seletor: article/main")
-                return self._process_text_container(container)
-            
-            # Estratégia 3: div com classe de conteúdo
-            for cls in ["content", "article", "prediction", "analysis", "preview"]:
+            # Estratégia 3: Classes específicas do scores24
+            for cls in ["prediction-content", "match-preview", "analysis-content", "previsao"]:
                 container = soup.find("div", class_=re.compile(cls, re.I))
                 if container:
                     log.info(f"  → Usando seletor: div.{cls}")
-                    return self._process_text_container(container)
+                    text = self._process_text_container(container)
+                    if text:
+                        return text
             
-            # Estratégia 4: body
+            # Estratégia 4: article ou main
+            container = soup.find("article") or soup.find("main")
+            if container:
+                log.info("  → Usando seletor: article/main")
+                text = self._process_text_container(container)
+                if text:
+                    return text
+            
+            # Estratégia 5: body inteiro
             body = soup.find("body")
             if body:
                 for elem in body.find_all(["nav", "header", "footer", "aside", "script", "style"]):
@@ -652,30 +673,67 @@ class NBAExtractor:
             log.error(f"Erro ao extrair texto: {e}")
             return None
 
+    def _extract_json_ld(self, soup: BeautifulSoup) -> Optional[str]:
+        """Extrai texto de JSON-LD (structured data)."""
+        try:
+            for script in soup.find_all("script", type="application/ld+json"):
+                try:
+                    data = json.loads(script.string or "")
+                    if isinstance(data, list):
+                        data = data[0]
+                    
+                    if data.get("@type") == "NewsArticle" or data.get("@type") == "Article":
+                        article_body = data.get("articleBody", "")
+                        description = data.get("description", "")
+                        
+                        # Prioriza articleBody, mas usa description se for maior
+                        text = article_body if len(article_body) > len(description) else description
+                        
+                        if len(text) > 200:
+                            log.info(f"  → Texto extraído via JSON-LD: {len(text)} chars")
+                            return text
+                            
+                except (json.JSONDecodeError, AttributeError):
+                    continue
+            
+            return None
+        except Exception as e:
+            log.error(f"Erro JSON-LD: {e}")
+            return None
+
     def _process_text_container(self, container, min_length=200) -> Optional[str]:
         """Processa container extraindo texto limpo."""
+        if not container:
+            return None
+            
         for elem in container.find_all(["button", "script", "style", "nav", "footer", "aside"]):
             elem.decompose()
         
         sections = []
         last_text = ""
         
-        for elem in container.find_all(["h1", "h2", "h3", "h4", "h5", "p", "li"]):
+        # Tenta extrair de vários tipos de elementos
+        for elem in container.find_all(["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "span", "div"]):
+            # Só pega divs que têm texto direto, não containers
+            if elem.name == "div" and len(elem.find_all(["p", "h2", "h3"])) > 0:
+                continue
+                
             text = elem.get_text(strip=True)
             
-            if not text or len(text) < 20:
+            if not text or len(text) < 15:
                 continue
             if text == last_text:
                 continue
             if any(x in text.lower() for x in [
                 "apostar", "registre", "bônus", "bet", "clique aqui", 
-                "cadastre-se", "promoção", "termos e condições"
+                "cadastre-se", "promoção", "termos e condições", "odds",
+                "1.73", "2.39", "15.5"  # Evita linhas de odds
             ]):
                 continue
             
             last_text = text
             
-            if elem.name in ["h1", "h2", "h3", "h4", "h5"]:
+            if elem.name in ["h1", "h2", "h3", "h4", "h5", "h6"]:
                 sections.append(f"\n{text}\n{'=' * min(len(text), 40)}")
             elif elem.name == "li":
                 sections.append(f"  • {text}")
@@ -790,7 +848,7 @@ class DatabaseManager:
                 "home_stats": g.home_stats,
                 "away_stats": g.away_stats,
                 "editorial_pick": g.editorial_pick,
-                "groq_insight": g.groq_insight,  # NOME CORRETO
+                "groq_insight": g.groq_insight,
             }
             
             for field, value in json_fields.items():
@@ -817,7 +875,7 @@ class DatabaseManager:
 
 # ─── Orquestrador ─────────────────────────────────────────────────────────────
 async def main():
-    log.info("═══ Replicante V6.5.3 (Fix Nome Groq) ═══")
+    log.info("═══ Replicante V6.5.4 (Fix Extração Texto + JS Rendering) ═══")
 
     if not Config.SCRAPINGANT_KEY:
         log.error("SCRAPINGANT_API_KEY ausente")
@@ -830,7 +888,7 @@ async def main():
     db = DatabaseManager()
 
     try:
-        html_list = await net.fetch(Config.PREDICTIONS_URL)
+        html_list = await net.fetch(Config.PREDICTIONS_URL, use_browser=False)
         if not html_list:
             log.error("Falha ao carregar lista")
             return
@@ -852,8 +910,9 @@ async def main():
                 log.info(f"[{game.away_tri} @ {game.home_tri}] → Cache OK")
                 return game
 
+            # NOVO: use_browser=True para páginas de detalhe (mais créditos mas renderiza JS)
             pred_url = f"{game.source_url}-prediction"
-            html = await net.fetch(pred_url)
+            html = await net.fetch(pred_url, use_browser=True)
             
             if html:
                 ext.extract_full_prediction(html, game)
@@ -867,7 +926,7 @@ async def main():
                     prompt = game.to_groq_prompt()
                     insight = await net.post_groq(prompt)
                     if insight:
-                        game.groq_insight = insight  # NOME CORRETO
+                        game.groq_insight = insight
                 elif not game.tactical_prediction:
                     log.warning(f"[{game.away_tri} @ {game.home_tri}] → Sem texto para Groq!")
             else:
@@ -888,7 +947,7 @@ async def main():
             db.upsert_games(valid)
 
         with_text = sum(1 for g in valid if g.tactical_prediction)
-        with_groq = sum(1 for g in valid if g.groq_insight)  # NOME CORRETO
+        with_groq = sum(1 for g in valid if g.groq_insight)
         
         log.info(f"═══ Resumo: {len(valid)} jogos | Texto:{with_text} | Groq:{with_groq} ═══")
 
