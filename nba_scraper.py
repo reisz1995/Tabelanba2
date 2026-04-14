@@ -467,12 +467,70 @@ class NBAExtractor:
 
             base_href = href.replace("-prediction", "")
             slug_clean = base_href.replace("/pt/basketball/", "")
+
+  
+    def extract_games_list(self, html: str, target_date: str) -> List[GameData]:
+        """Extração com Rastreamento Bi-Dimensional para agrupamentos de data (Headers)."""
+        soup = BeautifulSoup(html, "html.parser")
+        games = []
+        pattern = re.compile(r"/pt/basketball/m-(\d{2}-\d{2}-\d{4})-(.+?)(?:-prediction)?$")
+        seen_slugs: set[str] = set()
+
+        # Variáveis estritas de tempo (Tradução de YYYY-MM-DD para visual)
+        dt_target = datetime.strptime(target_date, "%Y-%m-%d")
+        hoje_visual = dt_target.strftime("%d.%m.%y") # Ex: "14.04.26"
+        
+        meses_pt = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"]
+        hoje_extenso = f"{dt_target.day:02d} {meses_pt[dt_target.month - 1]}" # Ex: "14 abr"
+        
+        for a in soup.find_all("a", href=pattern):
+            href = a.get("href", "")
+            if "#" in href:
+                continue
+
+            match = pattern.search(href)
+            if not match:
+                continue
+
+            # 1. Rastreamento Bi-Dimensional de Calendário
+            node_text = a.get_text(separator=" ", strip=True).lower()
+            is_valid_date = False
+            
+            # Condição A: A data está impressa DENTRO do cartão do jogo (Nó Local)
+            if "hoje" in node_text or hoje_visual in node_text or hoje_extenso in node_text:
+                is_valid_date = True
+            elif re.search(r'\d{2}\.\d{2}\.\d{2}|\d{2} (jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)', node_text):
+                # O cartão possui uma data explícita, mas NÃO é a de hoje.
+                pass
+            else:
+                # Condição B: A data é um cabeçalho (header) ANTERIOR ao cartão do jogo na página
+                # A máquina retrocede na árvore de texto até encontrar a marcação de tempo mais próxima
+                regex_data = re.compile(r'\d{2}\.\d{2}\.\d{2}|\d{2} (jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)|hoje|amanhã', re.I)
+                prev_date_node = a.find_previous(string=regex_data)
+                
+                if prev_date_node:
+                    prev_text = prev_date_node.strip().lower()
+                    if "hoje" in prev_text or hoje_visual in prev_text or hoje_extenso in prev_text:
+                        is_valid_date = True
+
+            # Disjuntor: Bloqueia entidades do dia seguinte sem processar as imagens
+            if not is_valid_date:
+                continue
+
+            # 2. Extração de Entidades (Isolada no nó <a> para impedir contaminação cruzada)
+            teams_slug = match.group(2)
+            time_match = re.search(r"(\d{2}:\d{2})", node_text)
+            t_brt, _ = self.parse_time(time_match.group(1) if time_match else None, target_date)
+
+            base_href = href.replace("-prediction", "")
+            slug_clean = base_href.replace("/pt/basketball/", "")
             
             if slug_clean in seen_slugs:
                 continue
             seen_slugs.add(slug_clean)
 
-            imgs = current_element.find_all("img") if current_element else a.find_all("img")
+            # Extrai escudos restritamente de dentro da tag <a> do jogo atual
+            imgs = a.find_all("img")
             alts = [img.get("alt", "").strip() for img in imgs if img.get("alt")]
             if len(alts) >= 2:
                 home, away = self.clean_team(alts[0]), self.clean_team(alts[1])
@@ -502,6 +560,7 @@ class NBAExtractor:
 
         log.info(f"Mapeamento concluído. Jogos alinhados ao fuso local: {len(games)}")
         return games
+                  
 
 
   
