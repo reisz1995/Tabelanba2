@@ -775,29 +775,31 @@ class DatabaseManager:
             for row in res.data
         }
 
+
     def upsert_games(self, games: List[GameData]):
-        seen = set()
-        unique = []
-        for g in games:
-            if g.slug not in seen:
-                seen.add(g.slug)
-                unique.append(g)
+        # O filtro de exclusão bloqueia as anomalias dimensionais que não existem na tabela
+        rows = [
+            game.model_dump(
+                mode="json",
+                exclude={
+                    "odds", 
+                    "h2h", 
+                    "home_form", 
+                    "away_form", 
+                    "home_news", 
+                    "away_news", 
+                    "home_stats", 
+                    "away_stats", 
+                    "editorial_pick"
+                }
+            ) for game in games
+        ]
         
-        if not unique:
-            return
-        
-        rows = []
-        for g in unique:
-            row = g.model_dump(mode="json")
-            # Serializa objetos aninhados
-            for key in ["odds", "h2h", "home_form", "away_form", "home_news", 
-                       "away_news", "home_stats", "away_stats", "editorial_pick", "groq_insight"]:
-                if row.get(key):
-                    row[key] = json.dumps(row[key])
-            rows.append(row)
-        
-        self.sb.table("nba_games_schedule").upsert(rows, on_conflict="slug").execute()
-        log.info(f"✓ Persistidos: {len(rows)} jogos")
+        try:
+            self.sb.table("nba_games_schedule").upsert(rows, on_conflict="slug").execute()
+            log.info("Persistência matriz-relacional concluída com sucesso.")
+        except Exception as e:
+            log.error(f"Falha de sincronia: {e}")
 
 
 # ─── Orquestrador Principal ───────────────────────────────────────────────────
