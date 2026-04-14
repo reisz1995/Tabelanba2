@@ -498,7 +498,7 @@ class NBAExtractor:
         except:
             return None
 
-    
+
 def _extract_form(self, soup: BeautifulSoup, game: GameData) -> tuple:
         home_form = TeamForm(team_name=game.home_team)
         away_form = TeamForm(team_name=game.away_team)
@@ -913,3 +913,8 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+                  
+
+
+
+
