@@ -263,60 +263,74 @@ class NBAExtractor:
         log.info(f"Jogos extraídos para {target_date}: {len(games)}")
         return games
 
-    def extract_prediction_text(self, html: Optional[str]) -> Optional[str]:
-        """Extrai previsão completa estruturada."""
-        if not html:
-            return None
 
-        soup = BeautifulSoup(html, "html.parser")
 
-        # 1. DisplayContent (principal)
-        container = soup.find(attrs={"data-testid": "DisplayContent"})
-        if container:
-            sections, seen = [], set()
-            for p in container.find_all("p", recursive=True):
-                text = p.get_text(separator=" ", strip=True)
-                if not text or len(text) < 20:
-                    continue
-                key = text[:60]
-                if key in seen:
-                    continue
-                seen.add(key)
-                m = self._HEADING_RE.match(text)
-                if m:
-                    sections.append(f"{m.group(1)}\n{text[m.end():].strip()}")
-                else:
-                    sections.append(text)
-
-            result = "\n\n".join(sections).strip()
-            if len(result) > 200:
-                log.info(f"  Previsão via DisplayContent ({len(result)} chars)")
-                return result
-
-        # 2. JSON-LD articleBody
-        for script in soup.find_all("script", type="application/ld+json"):
-            try:
-                payload = json.loads(script.string or "")
-                items = payload if isinstance(payload, list) else [payload]
-                for item in items:
-                    if item.get("@type") == "NewsArticle":
-                        body = item.get("articleBody", "").strip()
-                        if len(body) > 150:
-                            log.info(f"  Previsão via JSON-LD ({len(body)} chars)")
-                            return body
-            except (json.JSONDecodeError, AttributeError):
-                pass
-
-        # 3. Meta description (fallback)
-        meta = soup.find("meta", attrs={"name": "description"})
-        if meta:
-            desc = meta.get("content", "").strip()
-            if len(desc) > 80:
-                log.info(f"  Previsão via meta description ({len(desc)} chars)")
-                return desc
-
-        log.warning("  Nenhuma previsão encontrada.")
+def extract_prediction_text(self, html: Optional[str]) -> Optional[str]:
+    """
+    Extrai previsão completa estruturada do DisplayContent.
+    Captura: Introdução, análise dos times, Pontos-chave, Conclusão.
+    """
+    if not html:
         return None
+
+    soup = BeautifulSoup(html, "html.parser")
+
+    # ── 1. DisplayContent (conteúdo principal completo) ─────────────────
+    container = soup.find(attrs={"data-testid": "DisplayContent"})
+    if container:
+        sections = []
+        
+        # Encontra todos os elementos de texto: h2, h3, p, li
+        for elem in container.find_all(["h2", "h3", "h4", "p", "li"], recursive=True):
+            text = elem.get_text(strip=True)
+            if not text or len(text) < 10:
+                continue
+            
+            # Evita duplicatas de parágrafos muito similares
+            if sections and text[:50] == sections[-1][:50]:
+                continue
+                
+            # Identifica headings e formata
+            if elem.name in ["h2", "h3", "h4"]:
+                sections.append(f"\n{text}\n")
+            elif elem.name == "li":
+                sections.append(f"• {text}")
+            else:
+                sections.append(text)
+
+        result = "\n".join(sections).strip()
+        
+        # Remove múltiplas linhas em branco
+        result = re.sub(r'\n{3,}', '\n\n', result)
+        
+        if len(result) > 300:
+            log.info(f"  Previsão via DisplayContent completo ({len(result)} chars)")
+            return result
+
+    # ── 2. JSON-LD articleBody (fallback) ───────────────────────────────
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            payload = json.loads(script.string or "")
+            items = payload if isinstance(payload, list) else [payload]
+            for item in items:
+                if item.get("@type") == "NewsArticle":
+                    body = item.get("articleBody", "").strip()
+                    if len(body) > 200:
+                        log.info(f"  Previsão via JSON-LD ({len(body)} chars)")
+                        return body
+        except (json.JSONDecodeError, AttributeError):
+            pass
+
+    # ── 3. Meta description (fallback mínimo) ────────────────────────────
+    meta = soup.find("meta", attrs={"name": "description"})
+    if meta:
+        desc = meta.get("content", "").strip()
+        if len(desc) > 80:
+            log.info(f"  Previsão via meta description ({len(desc)} chars)")
+            return desc
+
+    log.warning("  Nenhuma previsão encontrada.")
+    return None
 
 
 # ─── Persistência ─────────────────────────────────────────────────────────────
