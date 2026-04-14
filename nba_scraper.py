@@ -71,86 +71,84 @@ def fetch_html(url: str, retries: int = 3) -> str | None:
     return None
 
 
-# ─── Extrator de Previsão Completa ───────────────────────────────────────────
 def extract_full_prediction(html: str | None) -> str | None:
     """
-    Extrai o texto completo e estruturado da previsão da página -prediction.
-
-    Estratégia em cascata:
-    1. data-testid="DisplayContent" → seletor estável do scores24 (principal)
-    2. JSON-LD articleBody          → structured data fallback
-    3. Meta description             → fallback mínimo
+    Extrator polimórfico de alta precisão.
+    Combina seleção rigorosa com algoritmo de densidade textual em cascata.
     """
     if not html:
         return None
 
     soup = BeautifulSoup(html, "html.parser")
 
-    # ── Estratégia 1: data-testid="DisplayContent" ───────────────────────────
-    # O scores24 expõe data-testid como API pública — estável entre deploys CSS.
-    # Cada seção da previsão (Introdução, time A, time B, Pontos-chave, Conclusão)
-    # fica num <p> com o título da seção colado diretamente ao texto.
-    container = soup.find(attrs={"data-testid": "DisplayContent"})
-    if container:
-        _NICKNAMES = (
-            "Hawks|Celtics|Nets|Hornets|Bulls|Cavaliers|Mavericks|Nuggets|Pistons|"
-            "Warriors|Rockets|Pacers|Clippers|Lakers|Grizzlies|Heat|Bucks|"
-            "Timberwolves|Pelicans|Knicks|Thunder|Magic|76ers|Suns|"
-            "Trail Blazers|Kings|Spurs|Raptors|Jazz|Wizards"
-        )
-        HEADING_RE = re.compile(
-            r"^(Introdução|Conclusão|Pontos-chave"
-            rf"|(?:[A-ZÁÉÍÓÚÃÕÂÊÔÇ][a-záéíóúãõâêôçA-ZÁÉÍÓÚÃÕÂÊÔÇ]{{1,20}}"
-            rf"(?:\s(?:{_NICKNAMES}))))"
-            r"\s+"
-        )
-
-        sections, seen = [], set()
-        for p in container.find_all("p", recursive=True):
-            text = p.get_text(separator=" ", strip=True)
-            if not text or len(text) < 20:
-                continue
-            key = text[:60]
-            if key in seen:
-                continue
-            seen.add(key)
-
-            m = HEADING_RE.match(text)
-            if m:
-                heading = m.group(1)
-                body    = text[m.end():].strip()
-                sections.append(f"{heading}\n{body}")
-            else:
-                sections.append(text)
-
-        result = "\n\n".join(sections).strip()
-        if len(result) > 200:
-            log.info(f"  Previsão extraída via DisplayContent ({len(result)} chars)")
-            return result
-
-    # ── Estratégia 2: JSON-LD articleBody ────────────────────────────────────
+    # ── Estágio 1: Expansão do Espectro JSON-LD (Estatística Pura) ───────────
+    valid_schemas = {"NewsArticle", "Article", "BlogPosting", "SportsArticle"}
     for script in soup.find_all("script", type="application/ld+json"):
         try:
             payload = json.loads(script.string or "")
             items = payload if isinstance(payload, list) else [payload]
             for item in items:
-                if item.get("@type") == "NewsArticle":
+                if item.get("@type") in valid_schemas:
                     body = item.get("articleBody", "").strip()
-                    if len(body) > 200:
-                        log.info(f"  Previsão extraída via JSON-LD ({len(body)} chars)")
+                    if len(body) > 150:
+                        log.info(f"  [HUD] Leitura via JSON-LD {item.get('@type')} ({len(body)} chars)")
                         return body
         except (json.JSONDecodeError, AttributeError):
             pass
 
-    # ── Estratégia 3: Meta description (fallback mínimo) ─────────────────────
+    # ── Estágio 2: Seletores de Interface Flexíveis ──────────────────────────
+    # Procura por contentores oficiais de leitura, permitindo variações
+    ui_containers = soup.find_all(
+        attrs={"data-testid": re.compile(r"DisplayContent|Article|Prediction", re.I)}
+    )
+    for container in ui_containers:
+        paragraphs = [p.get_text(separator=" ", strip=True) for p in container.find_all(["p", "h2", "h3"])]
+        text_block = "\n\n".join([p for p in paragraphs if len(p) > 30])
+        if len(text_block) > 150:
+            log.info(f"  [HUD] Leitura via TestID UI ({len(text_block)} chars)")
+            return text_block
+
+    # ── Estágio 3: Heurística de Densidade Textual (Força Bruta) ─────────────
+    # Se o alvo camuflar a estrutura, calculamos a densidade de bytes por nó
+    log.info("  [Matriz] Iniciando varredura por densidade textual...")
+    best_node = None
+    max_density = 0
+
+    # Analisamos contentores prováveis
+    for node in soup.find_all(["article", "main", "div"]):
+        # Extrai apenas parágrafos diretos ou de primeiro nível para evitar bolhas globais
+        p_tags = node.find_all("p")
+        
+        # Calcula a densidade de caracteres válidos neste nó
+        valid_texts = [p.get_text(strip=True) for p in p_tags if len(p.get_text(strip=True)) > 45]
+        node_density = sum(len(t) for t in valid_texts)
+
+        if node_density > max_density:
+            max_density = node_density
+            best_node = node
+
+    # Se encontrarmos um nó com massa textual suficiente (ex: > 200 caracteres úteis)
+    if best_node and max_density > 200:
+        final_paragraphs = []
+        for p in best_node.find_all("p"):
+            text = p.get_text(separator=" ", strip=True)
+            # Filtro de ruído: ignora texto muito curto (ex: "Publicidade", "Ler mais")
+            if len(text) > 40:
+                final_paragraphs.append(text)
+                
+        final_text = "\n\n".join(final_paragraphs).strip()
+        log.info(f"  [HUD] Leitura via Densidade Textual ({len(final_text)} chars)")
+        return final_text
+
+    # ── Estágio 4: Fallback de Metadados ─────────────────────────────────────
     meta = soup.find("meta", attrs={"name": "description"})
     if meta:
         desc = meta.get("content", "").strip()
         if len(desc) > 80:
-            log.info(f"  Previsão extraída via meta description ({len(desc)} chars)")
+            log.info(f"  [HUD] Leitura via Meta-Tags de Ecrã ({len(desc)} chars)")
             return desc
 
-    log.warning("  Nenhuma previsão encontrada nesta página.")
+    log.warning("  Falha sistémica: A estrutura do nó não possui texto detetável válido.")
     return None
 
 
