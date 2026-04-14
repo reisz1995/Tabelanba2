@@ -1,7 +1,7 @@
 """
-NBA Scraper - Matriz Replicante (Modo D0)
-Ingestão de metadados de partidas e extração vetorial JSON-LD para prognósticos.
-Otimizado para baixa latência de memória (MX Linux / Android hosts).
+NBA Scraper - Matriz Replicante (Modo D0) v3
+- Remove nba_game_url
+- Extrai previsão completa estruturada da página -prediction
 """
 
 import os
@@ -16,88 +16,138 @@ from bs4 import BeautifulSoup
 from supabase import create_client, Client
 from urllib.parse import quote
 
-# ─── Configuração de Matriz ──────────────────────────────────────────────────
+# ─── Configuração ────────────────────────────────────────────────────────────
 def _require_env(name: str) -> str:
     val = os.environ.get(name, "").strip()
     if not val:
         raise EnvironmentError(f"\n\n❌ Missing required secret in HUD: {name}")
     return val
 
-SUPABASE_URL = _require_env("SUPABASE_URL")
+SUPABASE_URL         = _require_env("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = _require_env("SUPABASE_SERVICE_KEY")
-SCRAPINGANT_API_KEY = os.environ.get("SCRAPINGANT_API_KEY", "")
+SCRAPINGANT_API_KEY  = os.environ.get("SCRAPINGANT_API_KEY", "")
 
-BASE_URL = "https://scores24.live"
-NBA_PREDICTIONS_URL = f"{BASE_URL}/pt/basketball/l-usa-nba/predictions"
+BASE_URL             = "https://scores24.live"
+NBA_PREDICTIONS_URL  = f"{BASE_URL}/pt/basketball/l-usa-nba/predictions"
 
 BRT = ZoneInfo("America/Sao_Paulo")
-ET = ZoneInfo("America/New_York")
+ET  = ZoneInfo("America/New_York")
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] [Estatístico Chefe] %(message)s",
+    format="%(asctime)s [%(levelname)s] [Replicante] %(message)s",
 )
 log = logging.getLogger(__name__)
 
 
-# ─── Conectores ─────────────────────────────────────────────────────────────
+# ─── Conectores ──────────────────────────────────────────────────────────────
 def get_supabase() -> Client:
     return create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 def get_scrapingant_url(target_url: str, proxy_country: str = "us") -> str:
     if not SCRAPINGANT_API_KEY:
         return target_url
-    encoded_url = quote(target_url, safe='')
+    encoded = quote(target_url, safe="")
     return (
         f"https://api.scrapingant.com/v2/general?"
-        f"url={encoded_url}&"
+        f"url={encoded}&"
         f"x-api-key={SCRAPINGANT_API_KEY}&"
         f"proxy_country={proxy_country}"
     )
 
 def fetch_html(url: str, retries: int = 3) -> str | None:
-    """I/O de rede com backoff exponencial."""
     for attempt in range(1, retries + 1):
         try:
-            target_url = get_scrapingant_url(url) if SCRAPINGANT_API_KEY else url
+            target = get_scrapingant_url(url) if SCRAPINGANT_API_KEY else url
             with httpx.Client(follow_redirects=True, timeout=45) as client:
-                log.info(f"Interceptando nó: {url[:60]}...")
-                resp = client.get(target_url)
+                log.info(f"Interceptando nó: {url[:70]}...")
+                resp = client.get(target)
                 resp.raise_for_status()
                 return resp.text
         except Exception as exc:
-            log.warning(f"Anomalia de rede (Tentativa {attempt}/{retries}): {exc}")
+            log.warning(f"Anomalia de rede (tentativa {attempt}/{retries}): {exc}")
             if attempt < retries:
                 time.sleep(2 ** attempt)
     return None
 
 
-# ─── Extratores de Dados Estruturados ────────────────────────────────────────
-def extract_tactical_prediction(html_payload: str) -> str | None:
+# ─── Extrator de Previsão Completa ───────────────────────────────────────────
+def extract_full_prediction(html: str | None) -> str | None:
     """
-    Motor de extração cirúrgica JSON-LD.
-    Complexidade: O(S), onde S é o número de blocos <script>.
+    Extrai o texto completo e estruturado da previsão da página -prediction.
+
+    Estratégia em cascata:
+    1. JSON-LD articleBody  → texto plano completo do artigo
+    2. Blocos semânticos HTML → headings + parágrafos na área de conteúdo
+    3. Meta description      → fallback mínimo
     """
-    if not html_payload:
+    if not html:
         return None
-        
-    soup = BeautifulSoup(html_payload, "html.parser")
-    ld_scripts = soup.find_all("script", type="application/ld+json")
-    
-    for node in ld_scripts:
-        if not node.string:
-            continue
+
+    soup = BeautifulSoup(html, "html.parser")
+
+    # ── Estratégia 1: JSON-LD articleBody ────────────────────────────────────
+    for script in soup.find_all("script", type="application/ld+json"):
         try:
-            payload = json.loads(node.string.strip())
-            if payload.get("@type") == "NewsArticle":
-                return payload.get("articleBody", "").strip()
-        except json.JSONDecodeError:
+            payload = json.loads(script.string or "")
+            body = ""
+            if isinstance(payload, list):
+                for item in payload:
+                    if item.get("@type") == "NewsArticle":
+                        body = item.get("articleBody", "")
+                        break
+            elif payload.get("@type") == "NewsArticle":
+                body = payload.get("articleBody", "")
+
+            if body and len(body) > 200:
+                log.info(f"  Previsão extraída via JSON-LD ({len(body)} chars)")
+                return body.strip()
+        except (json.JSONDecodeError, AttributeError):
             pass
-            
+
+    # ── Estratégia 2: Blocos semânticos do HTML ───────────────────────────────
+    # Encontra o container principal do artigo/previsão
+    article_container = (
+        soup.find("article") or
+        soup.find(attrs={"class": re.compile(r"prediction|article|content|preview", re.I)}) or
+        soup.find("main")
+    )
+
+    if article_container:
+        sections: list[str] = []
+        current_heading = ""
+
+        for tag in article_container.find_all(["h1", "h2", "h3", "h4", "p", "ul", "li"], recursive=True):
+            text = tag.get_text(separator=" ", strip=True)
+            if not text or len(text) < 15:
+                continue
+
+            if tag.name in ("h1", "h2", "h3", "h4"):
+                current_heading = text
+                sections.append(f"\n{text}\n")
+            elif tag.name == "p":
+                sections.append(text)
+            elif tag.name in ("ul", "li"):
+                sections.append(f"• {text}")
+
+        combined = "\n".join(sections).strip()
+        if len(combined) > 300:
+            log.info(f"  Previsão extraída via HTML semântico ({len(combined)} chars)")
+            return combined
+
+    # ── Estratégia 3: meta description (fallback mínimo) ─────────────────────
+    meta = soup.find("meta", attrs={"name": "description"})
+    if meta and meta.get("content", ""):
+        desc = meta["content"].strip()
+        if len(desc) > 80:
+            log.info(f"  Previsão extraída via meta description ({len(desc)} chars)")
+            return desc
+
+    log.warning("  Nenhuma previsão encontrada nesta página.")
     return None
 
 
-# ─── Parsers e Normalizadores ────────────────────────────────────────────────
+# ─── Helpers ─────────────────────────────────────────────────────────────────
 def clean_team_name(name: str) -> str:
     name = name.split("#")[0].strip()
     name = re.sub(r'\s*trends?$', '', name, flags=re.I).strip()
@@ -115,11 +165,11 @@ def parse_time_to_brt(time_str: str, date_str: str) -> tuple[str, str]:
             date_obj -= timedelta(days=1)
         return f"{hour_brt:02d}:{minute:02d}", date_obj.strftime("%Y-%m-%d")
     except Exception as exc:
-        log.warning(f"Falha na conversão temporal de telemetria {time_str}: {exc}")
+        log.warning(f"Falha na conversão temporal: {time_str}: {exc}")
         return "20:00", date_str
 
 def get_team_tri_code(team_name: str) -> str:
-    team_mapping = {
+    mapping = {
         "atlanta hawks": "ATL", "boston celtics": "BOS", "brooklyn nets": "BKN",
         "charlotte hornets": "CHA", "chicago bulls": "CHI", "cleveland cavaliers": "CLE",
         "dallas mavericks": "DAL", "denver nuggets": "DEN", "detroit pistons": "DET",
@@ -132,7 +182,7 @@ def get_team_tri_code(team_name: str) -> str:
         "sacramento kings": "SAC", "san antonio spurs": "SAS", "toronto raptors": "TOR",
         "utah jazz": "UTA", "washington wizards": "WAS",
     }
-    return team_mapping.get(team_name.lower().strip(), "NBA")
+    return mapping.get(team_name.lower().strip(), "NBA")
 
 def get_pt_name(team_name: str) -> str:
     pt_names = {
@@ -152,6 +202,8 @@ def get_pt_name(team_name: str) -> str:
             return pt
     return team_name
 
+
+# ─── Parser de lista de jogos ─────────────────────────────────────────────────
 def parse_game_list(html: str, target_date: str = None) -> list[dict]:
     soup = BeautifulSoup(html, "html.parser")
     games = []
@@ -162,7 +214,7 @@ def parse_game_list(html: str, target_date: str = None) -> list[dict]:
         href = a_tag.get("href", "")
         if "#" in href:
             continue
-            
+
         match = game_pattern.search(href)
         if not match:
             continue
@@ -171,32 +223,30 @@ def parse_game_list(html: str, target_date: str = None) -> list[dict]:
         if full_slug in seen_slugs:
             continue
         seen_slugs.add(full_slug)
-        
+
         slug_clean = full_slug.replace("/pt/basketball/", "").replace("-prediction", "")
-        date_str = match.group(1)
+        date_str   = match.group(1)
         teams_slug = match.group(2)
 
         try:
-            date_obj = datetime.strptime(date_str, "%d-%m-%Y")
+            date_obj  = datetime.strptime(date_str, "%d-%m-%Y")
             game_date = date_obj.strftime("%Y-%m-%d")
         except ValueError:
             continue
 
-        time_match = re.search(r"(\d{2}:\d{2})", a_tag.get_text())
-        time_raw = time_match.group(1) if time_match else None
-        
+        time_match   = re.search(r"(\d{2}:\d{2})", a_tag.get_text())
+        time_raw     = time_match.group(1) if time_match else None
         time_brt, date_adjusted = parse_time_to_brt(time_raw, game_date)
 
-        # ─── BARREIRA TEMPORAL ───
         if target_date and date_adjusted != target_date:
             continue
 
         team_imgs = a_tag.find_all("img")
-        team_names_from_alt = [img.get("alt", "").strip() for img in team_imgs if img.get("alt")]
+        alts = [img.get("alt", "").strip() for img in team_imgs if img.get("alt")]
 
-        if len(team_names_from_alt) >= 2:
-            home_team = clean_team_name(team_names_from_alt[0])
-            away_team = clean_team_name(team_names_from_alt[1])
+        if len(alts) >= 2:
+            home_team = clean_team_name(alts[0])
+            away_team = clean_team_name(alts[1])
         else:
             parts = teams_slug.split("-")
             mid = len(parts) // 2
@@ -204,99 +254,98 @@ def parse_game_list(html: str, target_date: str = None) -> list[dict]:
             away_team = clean_team_name(" ".join(p.title() for p in parts[mid:]))
 
         confidence_match = re.search(r"(\d{1,3})%", a_tag.get_text())
-        confidence_pct = int(confidence_match.group(1)) if confidence_match else None
+        confidence_pct   = int(confidence_match.group(1)) if confidence_match else None
 
-        full_url = BASE_URL + href if href.startswith("/") else href
-        
-        home_tri = get_team_tri_code(home_team)
-        away_tri = get_team_tri_code(away_team)
-        nba_slug = f"{away_tri.lower()}-vs-{home_tri.lower()}-0022500000"
-        
+        # URL de previsão — garante sufixo -prediction
+        base_href    = href.replace("-prediction", "")
+        source_url   = (BASE_URL + base_href if base_href.startswith("/") else base_href)
+        pred_url     = source_url + "-prediction"
+
         games.append({
-            "slug": slug_clean,
-            "game_date": date_adjusted,
-            "game_time_et": time_raw,
-            "game_time_brt": time_brt,
-            "home_team": home_team,
-            "away_team": away_team,
-            "home_team_pt": get_pt_name(home_team),
-            "away_team_pt": get_pt_name(away_team),
-            "home_tri": home_tri,
-            "away_tri": away_tri,
-            "source_url": full_url,
-            "nba_game_url": f"https://www.nba.com/game/{nba_slug}",
-            "confidence_pct": confidence_pct,
-            "game_status": "Scheduled",
-            "tactical_prediction": None,  # Preenchimento assíncrono posterior
-            "scraped_at": datetime.now(timezone.utc).isoformat(),
+            "slug":            slug_clean,
+            "game_date":       date_adjusted,
+            "game_time_et":    time_raw,
+            "game_time_brt":   time_brt,
+            "home_team":       home_team,
+            "away_team":       away_team,
+            "home_team_pt":    get_pt_name(home_team),
+            "away_team_pt":    get_pt_name(away_team),
+            "home_tri":        get_team_tri_code(home_team),
+            "away_tri":        get_team_tri_code(away_team),
+            "source_url":      source_url,
+            "prediction_url":  pred_url,          # usado internamente, não persistido
+            "confidence_pct":  confidence_pct,
+            "game_status":     "Scheduled",
+            "tactical_prediction": None,
+            "scraped_at":      datetime.now(timezone.utc).isoformat(),
         })
 
-    log.info(f"Filtro temporal aplicado. Entidades extraídas para {target_date or 'ALL'}: {len(games)}.")
+    log.info(f"Jogos extraídos para {target_date or 'ALL'}: {len(games)}")
     return games
 
 
-# ─── Mutação de Estado ───────────────────────────────────────────────────────
+# ─── Supabase upsert ──────────────────────────────────────────────────────────
+# Campos que existem na tabela (sem nba_game_url, sem prediction_url)
+DB_FIELDS = [
+    "slug", "game_date", "game_time_et", "game_time_brt",
+    "home_team", "away_team", "home_team_pt", "away_team_pt",
+    "home_tri", "away_tri", "source_url", "confidence_pct",
+    "game_status", "tactical_prediction", "scraped_at",
+]
+
 def upsert_games(sb: Client, games: list[dict]) -> None:
     if not games:
         return
-    seen_slugs = set()
-    unique_games = []
+    seen, rows = set(), []
     for g in games:
-        if g["slug"] not in seen_slugs:
-            seen_slugs.add(g["slug"])
-            unique_games.append(g)
-    
-    # Executa a gravação ignorando o RLS, assumindo chave de serviço
-    sb.table("nba_games_schedule").upsert(unique_games, on_conflict="slug").execute()
-    log.info(f"✓ Sincronização atómica finalizada: {len(unique_games)} registos persistidos.")
+        if g["slug"] not in seen:
+            seen.add(g["slug"])
+            rows.append({k: g[k] for k in DB_FIELDS if k in g})
+
+    sb.table("nba_games_schedule").upsert(rows, on_conflict="slug").execute()
+    log.info(f"✓ {len(rows)} registros persistidos em nba_games_schedule")
 
 
-# ─── Sequenciador Principal ──────────────────────────────────────────────────
+# ─── Pipeline principal ───────────────────────────────────────────────────────
 def run():
-    log.info("═══ Inicializando Sequência Scraper Replicante (Modo D0) ═══")
-    
+    log.info("═══ Replicante Modo D0 — iniciando ═══")
+
     if not SCRAPINGANT_API_KEY:
-        log.error("❌ Falha de ignição: SCRAPINGANT_API_KEY ausente na interface.")
+        log.error("❌ SCRAPINGANT_API_KEY ausente. Abortando.")
         return
-    
-    sb = get_supabase()
 
+    sb   = get_supabase()
     html = fetch_html(NBA_PREDICTIONS_URL)
+
     if not html:
-        log.error("Falha crítica no nó raiz (Predictions HTML).")
+        log.error("Falha crítica ao buscar página de previsões.")
         return
 
-    # ─── CALIBRAÇÃO DE MATRIZ TEMPORAL ───
-    today_target = datetime.now(BRT).strftime("%Y-%m-%d")
-    
-    # Estágio 1: Extração Filtrada
-    games = parse_game_list(html, target_date=today_target)
-    
+    today_brt = datetime.now(BRT).strftime("%Y-%m-%d")
+    games     = parse_game_list(html, target_date=today_brt)
+
     if not games:
-        log.info(f"Nenhum vetor de partida detetado para o ciclo {today_target}. Suspendendo operação.")
+        log.info(f"Nenhum jogo encontrado para {today_brt}. Encerrando.")
         return
 
-    # Estágio 2: Enriquecimento Assíncrono
-    log.info(f"Iniciando injeção tática nos {len(games)} vetores isolados...")
+    # Enriquecimento: busca previsão completa de cada jogo
+    log.info(f"Buscando previsões completas para {len(games)} jogos...")
     for g in games:
-        target_prediction_url = g["source_url"]
-        if not target_prediction_url.endswith("-prediction"):
-            target_prediction_url += "-prediction"
-            
-        detail_html = fetch_html(target_prediction_url)
-        prediction_text = extract_tactical_prediction(detail_html)
-        
-        g["tactical_prediction"] = prediction_text
-        time.sleep(0.5)
+        pred_url = g.pop("prediction_url")          # remove campo interno
+        detail_html = fetch_html(pred_url)
+        g["tactical_prediction"] = extract_full_prediction(detail_html)
+        preview = (g["tactical_prediction"] or "")[:80].replace("\n", " ")
+        log.info(f"  [{g['away_tri']} @ {g['home_tri']}] → {preview}...")
+        time.sleep(0.6)                              # pausa gentil
 
-    # Estágio 3: Persistência
     upsert_games(sb, games)
 
-    log.info("═══ Operação Concluída ═══")
+    log.info("═══ Operação concluída ═══")
     for g in games:
-        hud_status = "Com Previsão" if g["tactical_prediction"] else "Sem Previsão"
-        log.info(f"[{g['game_date']} | {g['game_time_brt']} BRT] {g['away_tri']} vs {g['home_tri']} | {hud_status}")
+        status = "✓ Com previsão" if g["tactical_prediction"] else "✗ Sem previsão"
+        log.info(f"  [{g['game_date']} {g['game_time_brt']} BRT] "
+                 f"{g['away_tri']} @ {g['home_tri']} — {status}")
 
 if __name__ == "__main__":
     run()
-        
+    
