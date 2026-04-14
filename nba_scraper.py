@@ -1,8 +1,9 @@
 """
-NBA Scraper - Replicante V6.5.1 (Async Engine + Groq Insights + Fix tactical_prediction)
+NBA Scraper - Replicante V6.5.2 (Async Engine + Fix Extração + Schema Flexível)
 Correções:
-  - [FIX] tactical_prediction agora é corretamente persistido no Supabase
-  - [FIX] Removido exclude desnecessário que bloqueava campos importantes
+  - [FIX] Seletores de texto atualizados para nova estrutura do site
+  - [FIX] Schema flexível - só persiste colunas que existem no Supabase
+  - [FIX] Extração de texto via múltiplos seletores fallback
 """
 
 import os
@@ -13,7 +14,7 @@ import asyncio
 import httpx
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Set
 from urllib.parse import quote
 
 from bs4 import BeautifulSoup
@@ -23,7 +24,7 @@ from supabase import create_client, Client
 # ─── Logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] [NBA-V6.5.1] %(message)s",
+    format="%(asctime)s [%(levelname)s] [NBA-V6.5.2] %(message)s",
 )
 log = logging.getLogger(__name__)
 
@@ -144,6 +145,7 @@ class GameData(BaseModel):
     game_status: str = "Scheduled"
     scraped_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     
+    # Campos JSON (não colunas separadas no Supabase)
     odds: Optional[OddsData] = None
     h2h: Optional[H2HData] = None
     home_form: Optional[TeamForm] = None
@@ -154,11 +156,12 @@ class GameData(BaseModel):
     away_stats: Optional[TeamStats] = None
     editorial_pick: Optional[EditorialPick] = None
     
+    # Campos de texto
     tactical_prediction: Optional[str] = None
-    groq_insight: Optional[GroqInsight] = None
+    groq_insight: Optional[GrokInsight] = None
 
     def to_groq_prompt(self) -> str:
-        """Gera prompt para Groq com todos os dados disponíveis."""
+        """Gera prompt para Groq."""
         def implied_prob(odds: float) -> float:
             return 100 / odds if odds > 0 else 0
         
@@ -171,37 +174,36 @@ class GameData(BaseModel):
         home_form_str = f"{self.home_form.wins_last_10}/10" if self.home_form and self.home_form.wins_last_10 else "N/A"
         away_form_str = f"{self.away_form.wins_last_10}/10" if self.away_form and self.away_form.wins_last_10 else "N/A"
         
-        return f"""Você é o Estatístico Chefe de NBA. Analise este jogo e forneça recomendação profissional.
+        return f"""Você é o Estatístico Chefe de NBA. Analise este jogo.
 
-## DADOS DO JOGO
+## DADOS
 {self.away_team} @ {self.home_team} | {self.game_date}
 
 ## MERCADO
-- Odds Casa (V1): {self.odds.v1 if self.odds else 'N/A'} (implícita: {home_implied:.1f}%)
-- Odds Visitante (V2): {self.odds.v2 if self.odds else 'N/A'} (implícita: {away_implied:.1f}%)
+- V1: {self.odds.v1 if self.odds else 'N/A'} ({home_implied:.1f}%)
+- V2: {self.odds.v2 if self.odds else 'N/A'} ({away_implied:.1f}%)
 
 ## CONTEXTO
-**H2H:** {self.h2h.total_matches if self.h2h else 'N/A'} jogos, casa vence {self.h2h.home_win_pct if self.h2h else 'N/A'}%
-**Forma Recente:** Casa {home_form_str} vs Visitante {away_form_str}
-**Lesões:** Casa: {home_injuries} | Visitante: {away_injuries}
-**Stats:** Casa {self.home_stats.points_scored_avg if self.home_stats else 'N/A'} pts | Visitante {self.away_stats.points_scored_avg if self.away_stats else 'N/A'} pts
+H2H: {self.h2h.total_matches if self.h2h else 'N/A'} jogos
+Forma: Casa {home_form_str} vs Visitante {away_form_str}
+Lesões Casa: {home_injuries}
+Lesões Visitante: {away_injuries}
 
-## ANÁLISE COMPLETA (Scores24):
-{self.tactical_prediction[:2000] if self.tactical_prediction else 'N/A'}
+## ANÁLISE COMPLETA
+{self.tactical_prediction[:2500] if self.tactical_prediction else 'N/A'}
 
 ---
-ATENÇÃO - DIRETRIZ DE CÁLCULO (ENTROPIA):
-Aplique modelo linear-pessimista para projeções de pontos. Assuma entropia natural (cansaço, desfalques, blowout no 4º quarto). Desconte margem de segurança pessimista nas médias ofensivas brutas antes de validar a linha justa.
+DIRETRIZ: Use modelo linear-pessimista. Desconte margem de segurança nas médias ofensivas.
 
-Retorne JSON estrito:
+Retorne JSON:
 {{
   "confidence_score": 0.0 a 5.0,
-  "fair_line": "ex: +3.5 ou O/U 225.5",
+  "fair_line": "ex: O/U 215.5",
   "edge_percentage": 0.0 a 50.0,
-  "key_factors": ["fator 1", "fator 2", "fator 3"],
+  "key_factors": ["fator 1", "fator 2"],
   "recommendation": "OVER/UNDER/FAVORITE/DOG/PASS",
   "stake_units": 0.5 a 5.0,
-  "reasoning": "explicação tática em português"
+  "reasoning": "explicação em português"
 }}"""
 
 
@@ -238,7 +240,7 @@ class NetworkClient:
                     return None
             return None
 
-    async def post_groq(self, prompt: str) -> Optional[GroqInsight]:
+    async def post_groq(self, prompt: str) -> Optional[GrokInsight]:
         if not Config.GROQ_API_KEY:
             log.warning("GROQ_API_KEY não configurada")
             return None
@@ -370,14 +372,12 @@ class NBAExtractor:
             if not match:
                 continue
 
-            # Validação de data no DOM
             node_text = a.get_text(separator=" ", strip=True).lower()
             is_valid_date = False
             
             if "hoje" in node_text or hoje_visual in node_text or hoje_extenso in node_text:
                 is_valid_date = True
             else:
-                # Busca data em elemento anterior
                 regex_data = re.compile(r'\d{2}\.\d{2}\.\d{2}|\d{2} (jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)|hoje|amanhã', re.I)
                 prev_date = a.find_previous(string=regex_data)
                 if prev_date:
@@ -437,18 +437,19 @@ class NBAExtractor:
             
         soup = BeautifulSoup(html, "html.parser")
         
-        # Extrai todos os componentes
+        # Extrai componentes
         game.odds = self._extract_odds(soup)
         game.h2h = self._extract_h2h(soup)
         game.home_form, game.away_form = self._extract_form(soup, game)
         game.home_news, game.away_news = self._extract_news(soup, game)
         game.home_stats, game.away_stats = self._extract_stats(soup, game)
         game.editorial_pick = self._extract_editorial(soup)
-        game.tactical_prediction = self._extract_text(soup)
         
-        # Log para debug
-        text_len = len(game.tactical_prediction) if game.tactical_prediction else 0
-        log.info(f"  → Texto extraído: {text_len} caracteres")
+        # NOVO: Extração de texto com múltiplos fallbacks
+        game.tactical_prediction = self._extract_text_v2(soup)
+        
+        log.info(f"  → Texto: {len(game.tactical_prediction) if game.tactical_prediction else 0} chars | "
+                f"Odds: {bool(game.odds)} | H2H: {bool(game.h2h)}")
 
     def _extract_odds(self, soup: BeautifulSoup) -> Optional[OddsData]:
         try:
@@ -459,8 +460,7 @@ class NBAExtractor:
             if match:
                 odds.v1, odds.x, odds.v2 = float(match.group(1)), float(match.group(2)), float(match.group(3))
             return odds if odds.v1 else None
-        except Exception as e:
-            log.debug(f"Erro odds: {e}")
+        except:
             return None
 
     def _extract_h2h(self, soup: BeautifulSoup) -> Optional[H2HData]:
@@ -495,11 +495,11 @@ class NBAExtractor:
                             away_score=int(scores[1])
                         ))
             return h2h
-        except Exception as e:
-            log.debug(f"Erro H2H: {e}")
+        except:
             return None
 
-    def _extract_form(self, soup: BeautifulSoup, game: GameData) -> tuple:
+    
+def _extract_form(self, soup: BeautifulSoup, game: GameData) -> tuple:
         home_form = TeamForm(team_name=game.home_team)
         away_form = TeamForm(team_name=game.away_team)
         
@@ -517,8 +517,7 @@ class NBAExtractor:
                 if pos_match:
                     target.position_conference = pos_match.group(1) + "º"
             return home_form, away_form
-        except Exception as e:
-            log.debug(f"Erro forma: {e}")
+        except:
             return home_form, away_form
 
     def _extract_news(self, soup: BeautifulSoup, game: GameData) -> tuple:
@@ -551,15 +550,13 @@ class NBAExtractor:
                         away_news.injuries.append(injury)
                         
             return home_news, away_news
-        except Exception as e:
-            log.debug(f"Erro news: {e}")
+        except:
             return home_news, away_news
 
     def _extract_stats(self, soup: BeautifulSoup, game: GameData) -> tuple:
         home_stats, away_stats = TeamStats(), TeamStats()
         
         try:
-            # Artilheiros
             section = soup.find(string=re.compile(r"Artilheiros", re.I))
             if section and section.find_parent(["div", "section"]):
                 text = section.find_parent(["div", "section"]).get_text()
@@ -571,7 +568,6 @@ class NBAExtractor:
                     else:
                         away_stats.top_scorer = scorer
 
-            # Pontos do texto de análise
             analysis = soup.find(attrs={"data-testid": "DisplayContent"})
             if analysis:
                 pts = re.findall(r'(\d+\.\d+)\s*pontos', analysis.get_text())
@@ -582,8 +578,7 @@ class NBAExtractor:
                     away_stats.points_allowed_avg = float(pts[3])
                     
             return home_stats, away_stats
-        except Exception as e:
-            log.debug(f"Erro stats: {e}")
+        except:
             return home_stats, away_stats
 
     def _extract_editorial(self, soup: BeautifulSoup) -> Optional[EditorialPick]:
@@ -619,77 +614,140 @@ class NBAExtractor:
                 pick.explanation = p.get_text(strip=True)
                 
             return pick if pick.recommendation else None
-        except Exception as e:
-            log.debug(f"Erro editorial: {e}")
+        except:
             return None
 
-    def _extract_text(self, soup: BeautifulSoup) -> Optional[str]:
-        """Extrai texto completo da análise."""
+    def _extract_text_v2(self, soup: BeautifulSoup) -> Optional[str]:
+        """NOVO: Extração de texto com múltiplos seletores."""
         try:
-            # Tenta vários seletores
-            container = (
-                soup.find(attrs={"data-testid": "DisplayContent"}) or
-                soup.find("article") or
-                soup.find("main") or
-                soup.find("div", class_=re.compile(r"content|article", re.I))
-            )
+            # Estratégia 1: data-testid="DisplayContent"
+            container = soup.find(attrs={"data-testid": "DisplayContent"})
+            if container:
+                log.info("  → Usando seletor: data-testid=DisplayContent")
+                return self._process_text_container(container)
             
-            if not container:
-                log.warning("  → Container de texto não encontrado")
-                return None
-
-            # Remove elementos indesejados
-            for elem in container.find_all(["button", "script", "style", "nav", "footer"]):
-                elem.decompose()
-
-            sections = []
-            last_text = ""
+            # Estratégia 2: article ou main
+            container = soup.find("article") or soup.find("main")
+            if container:
+                log.info("  → Usando seletor: article/main")
+                return self._process_text_container(container)
             
-            # Extrai todos os elementos de texto relevantes
-            for elem in container.find_all(["h1", "h2", "h3", "h4", "p", "li"]):
-                text = elem.get_text(strip=True)
-                
-                # Filtros
-                if not text or len(text) < 15:
-                    continue
-                if text == last_text:
-                    continue
-                if any(x in text.lower() for x in ["apostar", "registre", "bônus", "bet", "clique aqui"]):
-                    continue
-                    
-                last_text = text
-                
-                # Formatação
-                if elem.name in ["h1", "h2", "h3", "h4"]:
-                    sections.append(f"\n{text}\n{'=' * min(len(text), 50)}")
-                elif elem.name == "li":
-                    sections.append(f"  • {text}")
-                else:
-                    sections.append(text)
-
-            result = "\n\n".join(sections).strip()
+            # Estratégia 3: div com classe de conteúdo
+            for cls in ["content", "article", "prediction", "analysis", "preview"]:
+                container = soup.find("div", class_=re.compile(cls, re.I))
+                if container:
+                    log.info(f"  → Usando seletor: div.{cls}")
+                    return self._process_text_container(container)
             
-            # Limpa múltiplas quebras
-            result = re.sub(r'\n{3,}', '\n\n', result)
+            # Estratégia 4: Extrai de toda a página exceto header/footer
+            body = soup.find("body")
+            if body:
+                # Remove nav, header, footer, aside
+                for elem in body.find_all(["nav", "header", "footer", "aside", "script", "style"]):
+                    elem.decompose()
+                log.info("  → Usando seletor: body (fallback)")
+                return self._process_text_container(body, min_length=500)
             
-            log.info(f"  → Seções extraídas: {len(sections)} | Caracteres: {len(result)}")
-            return result if len(result) > 200 else None
+            log.warning("  → Nenhum container de texto encontrado")
+            return None
             
         except Exception as e:
             log.error(f"Erro ao extrair texto: {e}")
             return None
+
+    def _process_text_container(self, container, min_length=200) -> Optional[str]:
+        """Processa container extraindo texto limpo."""
+        # Remove elementos indesejados
+        for elem in container.find_all(["button", "script", "style", "nav", "footer", "aside"]):
+            elem.decompose()
+        
+        sections = []
+        last_text = ""
+        
+        # Busca por headings e parágrafos
+        for elem in container.find_all(["h1", "h2", "h3", "h4", "h5", "p", "li"]):
+            text = elem.get_text(strip=True)
+            
+            # Filtros
+            if not text or len(text) < 20:
+                continue
+            if text == last_text:
+                continue
+            if any(x in text.lower() for x in [
+                "apostar", "registre", "bônus", "bet", "clique aqui", 
+                "cadastre-se", "promoção", "termos e condições"
+            ]):
+                continue
+            
+            last_text = text
+            
+            # Formatação
+            if elem.name in ["h1", "h2", "h3", "h4", "h5"]:
+                sections.append(f"\n{text}\n{'=' * min(len(text), 40)}")
+            elif elem.name == "li":
+                sections.append(f"  • {text}")
+            else:
+                sections.append(text)
+        
+        result = "\n\n".join(sections).strip()
+        result = re.sub(r'\n{3,}', '\n\n', result)
+        
+        log.info(f"  → Seções: {len(sections)} | Caracteres: {len(result)}")
+        
+        return result if len(result) >= min_length else None
 
 
 # ─── Persistência ─────────────────────────────────────────────────────────────
 class DatabaseManager:
     def __init__(self):
         self.sb: Client = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+        self._known_columns: Optional[Set[str]] = None
+
+    def _get_table_columns(self) -> Set[str]:
+        """Descobre colunas existentes na tabela."""
+        if self._known_columns is not None:
+            return self._known_columns
+        
+        try:
+            # Faz uma query para descobrir schema
+            # Método: insere objeto vazio e vê erro, ou usa RPC
+            result = self.sb.table("nba_games_schedule").select("*").limit(1).execute()
+            
+            if result.data:
+                columns = set(result.data[0].keys())
+            else:
+                # Fallback: colunas padrão conhecidas
+                columns = {
+                    "id", "slug", "game_date", "game_time_et", "game_time_brt",
+                    "home_team", "away_team", "home_team_pt", "away_team_pt",
+                    "home_tri", "away_tri", "source_url", "confidence_pct",
+                    "game_status", "scraped_at", "tactical_prediction", "groq_insight"
+                }
+            
+            self._known_columns = columns
+            log.info(f"Colunas detectadas: {len(columns)}")
+            return columns
+            
+        except Exception as e:
+            log.warning(f"Não foi possível detectar colunas: {e}")
+            # Colunas mínimas garantidas
+            return {
+                "slug", "game_date", "game_time_et", "game_time_brt",
+                "home_team", "away_team", "home_team_pt", "away_team_pt",
+                "home_tri", "away_tri", "source_url", "tactical_prediction"
+            }
 
     def get_cached(self) -> Dict[str, dict]:
-        """Verifica cache incluindo tactical_prediction."""
-        res = self.sb.table("nba_games_schedule").select(
-            "slug, game_date, tactical_prediction, groq_insight"
-        ).execute()
+        """Verifica cache."""
+        columns = self._get_table_columns()
+        select_cols = ["slug", "game_date"]
+        
+        if "tactical_prediction" in columns:
+            select_cols.append("tactical_prediction")
+        if "groq_insight" in columns:
+            select_cols.append("groq_insight")
+        
+        res = self.sb.table("nba_games_schedule").select(",".join(select_cols)).execute()
         
         return {
             row["slug"]: {
@@ -701,10 +759,11 @@ class DatabaseManager:
         }
 
     def upsert_games(self, games: List[GameData]):
-        """Persiste todos os campos incluindo tactical_prediction."""
+        """Persiste apenas campos que existem no Supabase."""
+        columns = self._get_table_columns()
+        
         seen = set()
         unique = []
-        
         for g in games:
             if g.slug not in seen:
                 seen.add(g.slug)
@@ -714,36 +773,55 @@ class DatabaseManager:
             log.info("Nenhum jogo para persistir")
             return
         
-        # CORREÇÃO: Serializa todos os campos, incluindo tactical_prediction
+        # Mapeia campos do modelo para colunas
         rows = []
         for g in unique:
-            row = g.model_dump(mode="json")
+            row: Dict[str, Any] = {}
             
-            # Serializa objetos aninhados para JSON
-            json_fields = [
-                "odds", "h2h", "home_form", "away_form", 
-                "home_news", "away_news", "home_stats", "away_stats",
-                "editorial_pick", "groq_insight"
-            ]
+            # Campos básicos (sempre presentes)
+            basic_fields = {
+                "slug", "game_date", "game_time_et", "game_time_brt",
+                "home_team", "away_team", "home_team_pt", "away_team_pt",
+                "home_tri", "away_tri", "source_url", "confidence_pct",
+                "game_status", "scraped_at", "tactical_prediction"
+            }
             
-            for field in json_fields:
-                if row.get(field) is not None:
-                    row[field] = json.dumps(row[field], ensure_ascii=False)
+            for field in basic_fields:
+                if field in columns:
+                    value = getattr(g, field)
+                    row[field] = value
             
-            # Garante que tactical_prediction está presente
+            # Campos JSON (só se coluna existir)
+            json_fields = {
+                "odds": g.odds,
+                "h2h": g.h2h,
+                "home_form": g.home_form,
+                "away_form": g.away_form,
+                "home_news": g.home_news,
+                "away_news": g.away_news,
+                "home_stats": g.home_stats,
+                "away_stats": g.away_stats,
+                "editorial_pick": g.editorial_pick,
+                "groq_insight": g.grok_insight,
+            }
+            
+            for field, value in json_fields.items():
+                if field in columns and value is not None:
+                    row[field] = json.dumps(value, ensure_ascii=False, default=str)
+            
+            # Verifica se tem texto
             if not row.get("tactical_prediction"):
-                log.warning(f"  → {g.slug}: tactical_prediction vazio!")
+                log.warning(f"  → {g.slug}: SEM tactical_prediction")
             
             rows.append(row)
         
         try:
             self.sb.table("nba_games_schedule").upsert(rows, on_conflict="slug").execute()
             
-            # Log de confirmação
             for r in rows:
-                text_status = "✓" if r.get("tactical_prediction") else "✗"
-                groq_status = "✓" if r.get("groq_insight") else "✗"
-                log.info(f"  → Persistido: {r['slug'][:40]}... | Texto:{text_status} | Groq:{groq_status}")
+                text_ok = "✓" if r.get("tactical_prediction") else "✗"
+                groq_ok = "✓" if r.get("groq_insight") else "✗"
+                log.info(f"  → Persistido: {r['slug'][:40]} | Texto:{text_ok} | Groq:{groq_ok}")
                 
         except Exception as e:
             log.error(f"Erro ao persistir: {e}")
@@ -752,7 +830,7 @@ class DatabaseManager:
 
 # ─── Orquestrador ─────────────────────────────────────────────────────────────
 async def main():
-    log.info("═══ Replicante V6.5.1 (Fix tactical_prediction) ═══")
+    log.info("═══ Replicante V6.5.2 (Fix Extração + Schema Flexível) ═══")
 
     if not Config.SCRAPINGANT_KEY:
         log.error("SCRAPINGANT_API_KEY ausente")
@@ -781,12 +859,10 @@ async def main():
 
         async def process(game: GameData) -> GameData:
             cached = cache.get(game.slug, {})
-            
-            # Reprocessa se não tiver texto ou groq
             needs_update = not cached.get("has_text") or not cached.get("has_groq")
             
             if not needs_update and cached.get("game_date") == game.game_date:
-                log.info(f"[{game.away_tri} @ {game.home_tri}] → Cache completo")
+                log.info(f"[{game.away_tri} @ {game.home_tri}] → Cache OK")
                 return game
 
             pred_url = f"{game.source_url}-prediction"
@@ -799,17 +875,16 @@ async def main():
                 has_data = bool(game.odds or game.home_stats)
                 
                 log.info(f"[{game.away_tri} @ {game.home_tri}] → "
-                        f"Texto:{has_text} | Dados:{has_data}")
+                        f"Texto:{has_text} ({len(game.tactical_prediction) if game.tactical_prediction else 0} chars) | "
+                        f"Dados:{has_data}")
 
-                # Envia para Groq se tiver texto
                 if Config.GROQ_API_KEY and game.tactical_prediction:
                     prompt = game.to_groq_prompt()
                     insight = await net.post_groq(prompt)
                     if insight:
                         game.grok_insight = insight
                 elif not game.tactical_prediction:
-                    log.warning(f"[{game.away_tri} @ {game.home_tri}] → "
-                               "Sem texto para enviar ao Groq!")
+                    log.warning(f"[{game.away_tri} @ {game.home_tri}] → Sem texto para Groq!")
             else:
                 log.warning(f"[{game.away_tri} @ {game.home_tri}] → Sem HTML")
 
@@ -827,7 +902,6 @@ async def main():
         if valid:
             db.upsert_games(valid)
 
-        # Resumo
         with_text = sum(1 for g in valid if g.tactical_prediction)
         with_groq = sum(1 for g in valid if g.grok_insight)
         
@@ -839,4 +913,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-                      
