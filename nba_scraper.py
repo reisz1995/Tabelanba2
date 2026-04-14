@@ -373,17 +373,65 @@ class NBAExtractor:
             if not match:
                 continue
 
-            # 1. Expansão de Raio de Busca (Sobe até 3 níveis no HTML para ler a data do card inteiro)
+            # 1. Expansão de Raio de Busca (Isolada apenas para leitura temporal)
             node_text = a.get_text(separator=" ", strip=True).lower()
-            current_element = a
+            parent_node = a
             for _ in range(3):
                 if re.search(r'\d{2}\.\d{2}\.\d{2}', node_text) or "hoje" in node_text:
-                    break # Encontrou a data, para de subir na árvore
-                if current_element.parent:
-                    current_element = current_element.parent
-                    node_text = current_element.get_text(separator=" ", strip=True).lower()
+                    break 
+                if parent_node.parent:
+                    parent_node = parent_node.parent
+                    node_text = parent_node.get_text(separator=" ", strip=True).lower()
 
             is_valid_date = False
+            
+            # 2. Validação Estrita no DOM
+            visual_date_match = re.search(r'(\d{2}\.\d{2}\.\d{2,4})', node_text)
+            if visual_date_match:
+                extracted_date = visual_date_match.group(1)
+                if extracted_date.startswith(hoje_visual[:8]): 
+                    is_valid_date = True
+            elif "hoje" in node_text:
+                is_valid_date = True
+            
+            if visual_date_match and not is_valid_date:
+                continue 
+            
+            if not is_valid_date and not visual_date_match:
+                try:
+                    dt_obj = datetime.strptime(match.group(1), "%d-%m-%Y")
+                    if dt_obj.strftime("%Y-%m-%d") == target_date:
+                        is_valid_date = True
+                except ValueError:
+                    pass
+
+            if not is_valid_date:
+                continue
+
+            # 3. Processamento de Metadados
+            teams_slug = match.group(2)
+            time_match = re.search(r"(\d{2}:\d{2})", node_text)
+            t_brt, _ = self.parse_time(time_match.group(1) if time_match else None, target_date)
+
+            base_href = href.replace("-prediction", "")
+            slug_clean = base_href.replace("/pt/basketball/", "")
+            
+            if slug_clean in seen_slugs:
+                continue
+            seen_slugs.add(slug_clean)
+
+            # 4. CORREÇÃO CRÍTICA: Extração visual blindada ao nó original (<a>)
+            imgs = a.find_all("img")
+            alts = [img.get("alt", "").strip() for img in imgs if img.get("alt")]
+            
+            if len(alts) >= 2:
+                home, away = self.clean_team(alts[0]), self.clean_team(alts[1])
+            else:
+                parts = teams_slug.split("-")
+                mid = len(parts) // 2
+                home = " ".join(parts[:mid]).title()
+                away = " ".join(parts[mid:]).title()
+
             
             # 2. Validação Estrita no DOM
             visual_date_match = re.search(r'(\d{2}\.\d{2}\.\d{2,4})', node_text)
