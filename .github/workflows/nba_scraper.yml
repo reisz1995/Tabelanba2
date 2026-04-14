@@ -2,8 +2,8 @@ name: NBA Daily Scraper — Matriz Replicante
 
 on:
   schedule:
-    # 09:00 UTC = 06:00 ET = 06:00 BRT-3 — antes dos jogos do dia
-    - cron: "0 9 * * *"
+    # 12:00 UTC = 08:00 ET = 09:00 BRT (Horário de Brasília)
+    - cron: "0 12 * * *"
   workflow_dispatch:
 
 jobs:
@@ -30,6 +30,8 @@ jobs:
           SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SCRAPINGANT_API_KEY:  ${{ secrets.SCRAPINGANT_API_KEY }}
+          GROQ_API_KEY:         ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL:           "llama-3.3-70b-versatile"
         run: python nba_scraper.py
 
       - name: Upload logs on failure
