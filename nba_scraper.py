@@ -158,7 +158,7 @@ class GameData(BaseModel):
     
     # Campos de texto
     tactical_prediction: Optional[str] = None
-    groq_insight: Optional[GrokInsight] = None
+    groq_insight: Optional[GroqInsight] = None
 
     def to_groq_prompt(self) -> str:
         """Gera prompt para Groq."""
