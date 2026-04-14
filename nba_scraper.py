@@ -1,9 +1,9 @@
 """
-NBA Scraper - Replicante V6.5.2 (Async Engine + Fix Extração + Schema Flexível)
+NBA Scraper - Replicante V6.5.3 (Async Engine + Fix Nome Groq)
 Correções:
-  - [FIX] Seletores de texto atualizados para nova estrutura do site
-  - [FIX] Schema flexível - só persiste colunas que existem no Supabase
-  - [FIX] Extração de texto via múltiplos seletores fallback
+  - [FIX] Nome correto: groq_insight (não grok_insight)
+  - [FIX] Seletores de texto atualizados
+  - [FIX] Schema flexível
 """
 
 import os
@@ -24,7 +24,7 @@ from supabase import create_client, Client
 # ─── Logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] [NBA-V6.5.2] %(message)s",
+    format="%(asctime)s [%(levelname)s] [NBA-V6.5.3] %(message)s",
 )
 log = logging.getLogger(__name__)
 
@@ -145,7 +145,7 @@ class GameData(BaseModel):
     game_status: str = "Scheduled"
     scraped_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     
-    # Campos JSON (não colunas separadas no Supabase)
+    # Campos JSON
     odds: Optional[OddsData] = None
     h2h: Optional[H2HData] = None
     home_form: Optional[TeamForm] = None
@@ -158,7 +158,7 @@ class GameData(BaseModel):
     
     # Campos de texto
     tactical_prediction: Optional[str] = None
-    groq_insight: Optional[GroqInsight] = None
+    groq_insight: Optional[GroqInsight] = None  # NOME CORRETO
 
     def to_groq_prompt(self) -> str:
         """Gera prompt para Groq."""
@@ -437,15 +437,12 @@ class NBAExtractor:
             
         soup = BeautifulSoup(html, "html.parser")
         
-        # Extrai componentes
         game.odds = self._extract_odds(soup)
         game.h2h = self._extract_h2h(soup)
         game.home_form, game.away_form = self._extract_form(soup, game)
         game.home_news, game.away_news = self._extract_news(soup, game)
         game.home_stats, game.away_stats = self._extract_stats(soup, game)
         game.editorial_pick = self._extract_editorial(soup)
-        
-        # NOVO: Extração de texto com múltiplos fallbacks
         game.tactical_prediction = self._extract_text_v2(soup)
         
         log.info(f"  → Texto: {len(game.tactical_prediction) if game.tactical_prediction else 0} chars | "
@@ -619,7 +616,7 @@ class NBAExtractor:
             return None
 
     def _extract_text_v2(self, soup: BeautifulSoup) -> Optional[str]:
-        """NOVO: Extração de texto com múltiplos seletores."""
+        """Extração de texto com múltiplos seletores."""
         try:
             # Estratégia 1: data-testid="DisplayContent"
             container = soup.find(attrs={"data-testid": "DisplayContent"})
@@ -640,10 +637,9 @@ class NBAExtractor:
                     log.info(f"  → Usando seletor: div.{cls}")
                     return self._process_text_container(container)
             
-            # Estratégia 4: Extrai de toda a página exceto header/footer
+            # Estratégia 4: body
             body = soup.find("body")
             if body:
-                # Remove nav, header, footer, aside
                 for elem in body.find_all(["nav", "header", "footer", "aside", "script", "style"]):
                     elem.decompose()
                 log.info("  → Usando seletor: body (fallback)")
@@ -658,18 +654,15 @@ class NBAExtractor:
 
     def _process_text_container(self, container, min_length=200) -> Optional[str]:
         """Processa container extraindo texto limpo."""
-        # Remove elementos indesejados
         for elem in container.find_all(["button", "script", "style", "nav", "footer", "aside"]):
             elem.decompose()
         
         sections = []
         last_text = ""
         
-        # Busca por headings e parágrafos
         for elem in container.find_all(["h1", "h2", "h3", "h4", "h5", "p", "li"]):
             text = elem.get_text(strip=True)
             
-            # Filtros
             if not text or len(text) < 20:
                 continue
             if text == last_text:
@@ -682,7 +675,6 @@ class NBAExtractor:
             
             last_text = text
             
-            # Formatação
             if elem.name in ["h1", "h2", "h3", "h4", "h5"]:
                 sections.append(f"\n{text}\n{'=' * min(len(text), 40)}")
             elif elem.name == "li":
@@ -710,13 +702,11 @@ class DatabaseManager:
             return self._known_columns
         
         try:
-            # Faz uma query para descobrir schema
             result = self.sb.table("nba_games_schedule").select("*").limit(1).execute()
             
             if result.data:
                 columns = set(result.data[0].keys())
             else:
-                # Fallback: colunas padrão conhecidas
                 columns = {
                     "id", "slug", "game_date", "game_time_et", "game_time_brt",
                     "home_team", "away_team", "home_team_pt", "away_team_pt",
@@ -730,7 +720,6 @@ class DatabaseManager:
             
         except Exception as e:
             log.warning(f"Não foi possível detectar colunas: {e}")
-            # Colunas mínimas garantidas
             return {
                 "slug", "game_date", "game_time_et", "game_time_brt",
                 "home_team", "away_team", "home_team_pt", "away_team_pt",
@@ -773,12 +762,11 @@ class DatabaseManager:
             log.info("Nenhum jogo para persistir")
             return
         
-        # Mapeia campos do modelo para colunas
         rows = []
         for g in unique:
             row: Dict[str, Any] = {}
             
-            # Campos básicos (sempre presentes)
+            # Campos básicos
             basic_fields = {
                 "slug", "game_date", "game_time_et", "game_time_brt",
                 "home_team", "away_team", "home_team_pt", "away_team_pt",
@@ -791,7 +779,7 @@ class DatabaseManager:
                     value = getattr(g, field)
                     row[field] = value
             
-            # Campos JSON (só se coluna existir)
+            # Campos JSON
             json_fields = {
                 "odds": g.odds,
                 "h2h": g.h2h,
@@ -802,14 +790,13 @@ class DatabaseManager:
                 "home_stats": g.home_stats,
                 "away_stats": g.away_stats,
                 "editorial_pick": g.editorial_pick,
-                "groq_insight": g.grok_insight,
+                "groq_insight": g.groq_insight,  # NOME CORRETO
             }
             
             for field, value in json_fields.items():
                 if field in columns and value is not None:
                     row[field] = json.dumps(value, ensure_ascii=False, default=str)
             
-            # Verifica se tem texto
             if not row.get("tactical_prediction"):
                 log.warning(f"  → {g.slug}: SEM tactical_prediction")
             
@@ -830,7 +817,7 @@ class DatabaseManager:
 
 # ─── Orquestrador ─────────────────────────────────────────────────────────────
 async def main():
-    log.info("═══ Replicante V6.5.2 (Fix Extração + Schema Flexível) ═══")
+    log.info("═══ Replicante V6.5.3 (Fix Nome Groq) ═══")
 
     if not Config.SCRAPINGANT_KEY:
         log.error("SCRAPINGANT_API_KEY ausente")
@@ -872,17 +859,15 @@ async def main():
                 ext.extract_full_prediction(html, game)
                 
                 has_text = bool(game.tactical_prediction)
-                has_data = bool(game.odds or game.home_stats)
                 
                 log.info(f"[{game.away_tri} @ {game.home_tri}] → "
-                        f"Texto:{has_text} ({len(game.tactical_prediction) if game.tactical_prediction else 0} chars) | "
-                        f"Dados:{has_data}")
+                        f"Texto:{has_text} ({len(game.tactical_prediction) if game.tactical_prediction else 0} chars)")
 
                 if Config.GROQ_API_KEY and game.tactical_prediction:
                     prompt = game.to_groq_prompt()
                     insight = await net.post_groq(prompt)
                     if insight:
-                        game.grok_insight = insight
+                        game.groq_insight = insight  # NOME CORRETO
                 elif not game.tactical_prediction:
                     log.warning(f"[{game.away_tri} @ {game.home_tri}] → Sem texto para Groq!")
             else:
@@ -903,7 +888,7 @@ async def main():
             db.upsert_games(valid)
 
         with_text = sum(1 for g in valid if g.tactical_prediction)
-        with_groq = sum(1 for g in valid if g.grok_insight)
+        with_groq = sum(1 for g in valid if g.groq_insight)  # NOME CORRETO
         
         log.info(f"═══ Resumo: {len(valid)} jogos | Texto:{with_text} | Groq:{with_groq} ═══")
 
