@@ -353,16 +353,16 @@ class NBAExtractor:
         except Exception:
             return "20:00", date_str
 
+
     def extract_games_list(self, html: str, target_date: str) -> List[GameData]:
-        """Extração com bloqueio temporal via DOM renderizado."""
+        """Extração com expansão de raio DOM para blindar anomalias de URL."""
         soup = BeautifulSoup(html, "html.parser")
         games = []
         pattern = re.compile(r"/pt/basketball/m-(\d{2}-\d{2}-\d{4})-(.+?)(?:-prediction)?$")
         seen_slugs: set[str] = set()
 
-        # Determina o formato de data exato usado no ecrã pela Scores24 (ex: 14.04.26)
         dt_target = datetime.strptime(target_date, "%Y-%m-%d")
-        hoje_visual = dt_target.strftime("%d.%m.%y")
+        hoje_visual = dt_target.strftime("%d.%m.%y") # Ex: 14.04.26
         
         for a in soup.find_all("a", href=pattern):
             href = a.get("href", "")
@@ -373,19 +373,34 @@ class NBAExtractor:
             if not match:
                 continue
 
-            # Disjuntor Lógico de Calendário
-            # O sistema lê o texto renderizado no nó HTML para procurar "Hoje" ou a data exata
+            # 1. Expansão de Raio de Busca (Sobe até 3 níveis no HTML para ler a data do card inteiro)
             node_text = a.get_text(separator=" ", strip=True).lower()
+            current_element = a
+            for _ in range(3):
+                if re.search(r'\d{2}\.\d{2}\.\d{2}', node_text) or "hoje" in node_text:
+                    break # Encontrou a data, para de subir na árvore
+                if current_element.parent:
+                    current_element = current_element.parent
+                    node_text = current_element.get_text(separator=" ", strip=True).lower()
+
             is_valid_date = False
             
-            visual_date_match = re.search(r'(\d{2}\.\d{2}\.\d{2})', node_text)
+            # 2. Validação Estrita no DOM
+            visual_date_match = re.search(r'(\d{2}\.\d{2}\.\d{2,4})', node_text)
             if visual_date_match:
-                if visual_date_match.group(1) == hoje_visual:
+                extracted_date = visual_date_match.group(1)
+                # Se os primeiros 8 caracteres baterem (ex: 14.04.26), é o jogo de hoje
+                if extracted_date.startswith(hoje_visual[:8]): 
                     is_valid_date = True
             elif "hoje" in node_text:
                 is_valid_date = True
             
-            # Fallback estrito: Se a data não está no DOM, usa a do slug apenas se bater com o alvo
+            # Se a máquina leu uma data no ecrã e ELA NÃO É HOJE, bloqueia instantaneamente. 
+            # Cortamos a confiança no Slug.
+            if visual_date_match and not is_valid_date:
+                continue 
+            
+            # Fallback (Apenas se o site ocultar completamente a data na interface)
             if not is_valid_date and not visual_date_match:
                 try:
                     dt_obj = datetime.strptime(match.group(1), "%d-%m-%Y")
@@ -397,6 +412,7 @@ class NBAExtractor:
             if not is_valid_date:
                 continue
 
+            # ... (Restante da extração continua igual)
             teams_slug = match.group(2)
             time_match = re.search(r"(\d{2}:\d{2})", node_text)
             t_brt, _ = self.parse_time(time_match.group(1) if time_match else None, target_date)
@@ -408,7 +424,7 @@ class NBAExtractor:
                 continue
             seen_slugs.add(slug_clean)
 
-            imgs = a.find_all("img")
+            imgs = current_element.find_all("img") if current_element else a.find_all("img")
             alts = [img.get("alt", "").strip() for img in imgs if img.get("alt")]
             if len(alts) >= 2:
                 home, away = self.clean_team(alts[0]), self.clean_team(alts[1])
@@ -439,6 +455,9 @@ class NBAExtractor:
         log.info(f"Mapeamento concluído. Jogos alinhados ao fuso local: {len(games)}")
         return games
 
+
+  
+    
     def extract_full_prediction(self, html: str, game: GameData) -> None:
         if not html: return
         soup = BeautifulSoup(html, "html.parser")
