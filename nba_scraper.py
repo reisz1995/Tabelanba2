@@ -240,7 +240,7 @@ class NetworkClient:
                     return None
             return None
 
-    async def post_groq(self, prompt: str) -> Optional[GrokInsight]:
+    async def post_groq(self, prompt: str) -> Optional[GroqInsight]:
         if not Config.GROQ_API_KEY:
             log.warning("GROQ_API_KEY não configurada")
             return None
@@ -498,8 +498,7 @@ class NBAExtractor:
         except:
             return None
 
-
-def _extract_form(self, soup: BeautifulSoup, game: GameData) -> tuple:
+    def _extract_form(self, soup: BeautifulSoup, game: GameData) -> tuple:
         home_form = TeamForm(team_name=game.home_team)
         away_form = TeamForm(team_name=game.away_team)
         
@@ -521,7 +520,8 @@ def _extract_form(self, soup: BeautifulSoup, game: GameData) -> tuple:
             return home_form, away_form
 
     def _extract_news(self, soup: BeautifulSoup, game: GameData) -> tuple:
-        home_news, away_news = TeamNews(), TeamNews()
+        home_news = TeamNews()
+        away_news = TeamNews()
         
         try:
             section = soup.find(string=re.compile(r"Últimas notícias", re.I))
@@ -554,7 +554,8 @@ def _extract_form(self, soup: BeautifulSoup, game: GameData) -> tuple:
             return home_news, away_news
 
     def _extract_stats(self, soup: BeautifulSoup, game: GameData) -> tuple:
-        home_stats, away_stats = TeamStats(), TeamStats()
+        home_stats = TeamStats()
+        away_stats = TeamStats()
         
         try:
             section = soup.find(string=re.compile(r"Artilheiros", re.I))
@@ -710,7 +711,6 @@ class DatabaseManager:
         
         try:
             # Faz uma query para descobrir schema
-            # Método: insere objeto vazio e vê erro, ou usa RPC
             result = self.sb.table("nba_games_schedule").select("*").limit(1).execute()
             
             if result.data:
@@ -913,8 +913,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-                  
-
-
-
-
