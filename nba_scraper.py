@@ -1,10 +1,10 @@
 """
-NBA Scraper - Replicante V6.1 (Async Engine - Corrigido)
-Correções aplicadas:
-  - [FIX] Deduplicação por slug_clean (não slug_raw) — evita duplicatas no Supabase
-  - [FIX] Retry com backoff exponencial para erros 409 do ScrapingAnt
-  - [FIX] Segurança final na persistência — remove duplicatas antes do upsert
-  - [FIX] Tratamento específico de HTTPStatusError no fetch
+NBA Scraper - Replicante V6.2 (Async Engine - Completo)
+Correções:
+  - [FIX] Método extract_prediction_text completo e funcional
+  - [FIX] Captura texto estruturado: Introdução, Times, Pontos-chave, Conclusão
+  - [FIX] Deduplicação por slug_clean
+  - [FIX] Retry com backoff para 409
 """
 
 import os
@@ -25,7 +25,7 @@ from supabase import create_client, Client
 # ─── Logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] [NBA-V6.1] %(message)s",
+    format="%(asctime)s [%(levelname)s] [NBA-V6.2] %(message)s",
 )
 log = logging.getLogger(__name__)
 
@@ -35,7 +35,6 @@ ET  = ZoneInfo("America/New_York")
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 def _require_env(name: str) -> str:
-    """Falha explícita se variável de ambiente obrigatória estiver ausente."""
     val = os.environ.get(name, "").strip()
     if not val:
         raise EnvironmentError(f"❌ Secret ausente: {name}")
@@ -76,7 +75,6 @@ class NetworkClient:
         self.semaphore = asyncio.Semaphore(Config.CONCURRENCY_LIMIT)
 
     async def fetch(self, url: str, retries: int = 2) -> Optional[str]:
-        """Fetch com retry automático para erros 409."""
         async with self.semaphore:
             for attempt in range(retries + 1):
                 try:
@@ -84,9 +82,8 @@ class NetworkClient:
                     log.info(f"Interceptando nó: {url[:70]}...")
                     resp = await self.client.get(target)
                     
-                    # CORREÇÃO: Retry com backoff exponencial para 409
                     if resp.status_code == 409 and attempt < retries:
-                        wait = 2 ** attempt  # 1s, 2s
+                        wait = 2 ** attempt
                         log.warning(f"409 Conflict em {url[:50]}..., retry em {wait}s (tentativa {attempt + 1}/{retries})")
                         await asyncio.sleep(wait)
                         continue
@@ -126,12 +123,6 @@ class NBAExtractor:
         "Warriors|Rockets|Pacers|Clippers|Lakers|Grizzlies|Heat|Bucks|"
         "Timberwolves|Pelicans|Knicks|Thunder|Magic|76ers|Suns|"
         "Trail Blazers|Kings|Spurs|Raptors|Jazz|Wizards"
-    )
-    _HEADING_RE = re.compile(
-        r"^(Introdução|Conclusão|Pontos-chave"
-        rf"|(?:[A-ZÁÉÍÓÚÃÕÂÊÔÇ][a-záéíóúãõâêôçA-ZÁÉÍÓÚÃÕÂÊÔÇ]{{1,20}}"
-        rf"(?:\s(?:{_NICKNAMES}))))"
-        r"\s+"
     )
 
     @staticmethod
@@ -189,11 +180,10 @@ class NBAExtractor:
             return "20:00", date_str
 
     def extract_games_list(self, html: str, target_date: str) -> List[GameData]:
-        """Extrai lista de jogos com deduplicação correta por slug_clean."""
         soup = BeautifulSoup(html, "html.parser")
         games = []
         pattern = re.compile(r"/pt/basketball/m-(\d{2}-\d{2}-\d{4})-(.+?)(?:-prediction)?$")
-        seen_slugs: set[str] = set()  # Agora armazena slug_clean
+        seen_slugs: set[str] = set()
 
         for a in soup.find_all("a", href=pattern):
             href = a.get("href", "")
@@ -221,17 +211,13 @@ class NBAExtractor:
             if d_adj != target_date:
                 continue
 
-            # CORREÇÃO: Calcula slug_clean ANTES da deduplicação
             base_href = href.replace("-prediction", "")
             slug_clean = base_href.replace("/pt/basketball/", "")
             
-            # CORREÇÃO: Deduplica por slug_clean, não pelo href completo
             if slug_clean in seen_slugs:
-                log.debug(f"Duplicata ignorada: {slug_clean}")
                 continue
             seen_slugs.add(slug_clean)
 
-            # Extrai times
             imgs = a.find_all("img")
             alts = [img.get("alt", "").strip() for img in imgs if img.get("alt")]
             if len(alts) >= 2:
@@ -263,74 +249,78 @@ class NBAExtractor:
         log.info(f"Jogos extraídos para {target_date}: {len(games)}")
         return games
 
+    def extract_prediction_text(self, html: Optional[str]) -> Optional[str]:
+        """
+        Extrai previsão completa estruturada do DisplayContent.
+        Captura: Introdução, análise dos times, Pontos-chave, Conclusão.
+        """
+        if not html:
+            return None
 
+        soup = BeautifulSoup(html, "html.parser")
 
-def extract_prediction_text(self, html: Optional[str]) -> Optional[str]:
-    """
-    Extrai previsão completa estruturada do DisplayContent.
-    Captura: Introdução, análise dos times, Pontos-chave, Conclusão.
-    """
-    if not html:
-        return None
-
-    soup = BeautifulSoup(html, "html.parser")
-
-    # ── 1. DisplayContent (conteúdo principal completo) ─────────────────
-    container = soup.find(attrs={"data-testid": "DisplayContent"})
-    if container:
-        sections = []
-        
-        # Encontra todos os elementos de texto: h2, h3, p, li
-        for elem in container.find_all(["h2", "h3", "h4", "p", "li"], recursive=True):
-            text = elem.get_text(strip=True)
-            if not text or len(text) < 10:
-                continue
+        # 1. DisplayContent - conteúdo principal completo
+        container = soup.find(attrs={"data-testid": "DisplayContent"})
+        if container:
+            sections = []
+            last_text = ""
             
-            # Evita duplicatas de parágrafos muito similares
-            if sections and text[:50] == sections[-1][:50]:
-                continue
+            # Remove elementos de propaganda/botões
+            for unwanted in container.find_all(["button", "a", "script", "style"]):
+                unwanted.decompose()
+            
+            # Extrai todos os elementos de texto relevantes
+            for elem in container.find_all(["h1", "h2", "h3", "h4", "p", "li"], recursive=True):
+                text = elem.get_text(strip=True)
                 
-            # Identifica headings e formata
-            if elem.name in ["h2", "h3", "h4"]:
-                sections.append(f"\n{text}\n")
-            elif elem.name == "li":
-                sections.append(f"• {text}")
-            else:
-                sections.append(text)
+                # Filtros de qualidade
+                if not text or len(text) < 10:
+                    continue
+                if text == last_text:  # Evita duplicatas exatas
+                    continue
+                if "APOSTAR" in text or "odds" in text.lower() and "1." in text:
+                    continue  # Remove linhas de apostas
+                    
+                last_text = text
+                
+                # Formatação por tipo de elemento
+                if elem.name in ["h1", "h2", "h3", "h4"]:
+                    sections.append(f"\n{text}\n{'=' * len(text)}")
+                elif elem.name == "li":
+                    sections.append(f"• {text}")
+                else:
+                    sections.append(text)
 
-        result = "\n".join(sections).strip()
-        
-        # Remove múltiplas linhas em branco
-        result = re.sub(r'\n{3,}', '\n\n', result)
-        
-        if len(result) > 300:
-            log.info(f"  Previsão via DisplayContent completo ({len(result)} chars)")
-            return result
+            result = "\n\n".join(sections).strip()
+            result = re.sub(r'\n{4,}', '\n\n\n', result)  # Normaliza quebras
+            
+            if len(result) > 300:
+                log.info(f"  Previsão extraída: {len(result)} caracteres")
+                return result
 
-    # ── 2. JSON-LD articleBody (fallback) ───────────────────────────────
-    for script in soup.find_all("script", type="application/ld+json"):
-        try:
-            payload = json.loads(script.string or "")
-            items = payload if isinstance(payload, list) else [payload]
-            for item in items:
-                if item.get("@type") == "NewsArticle":
-                    body = item.get("articleBody", "").strip()
-                    if len(body) > 200:
-                        log.info(f"  Previsão via JSON-LD ({len(body)} chars)")
-                        return body
-        except (json.JSONDecodeError, AttributeError):
-            pass
+        # 2. JSON-LD articleBody (fallback)
+        for script in soup.find_all("script", type="application/ld+json"):
+            try:
+                payload = json.loads(script.string or "")
+                items = payload if isinstance(payload, list) else [payload]
+                for item in items:
+                    if item.get("@type") == "NewsArticle":
+                        body = item.get("articleBody", "").strip()
+                        if len(body) > 200:
+                            log.info(f"  Previsão via JSON-LD: {len(body)} caracteres")
+                            return body
+            except (json.JSONDecodeError, AttributeError):
+                pass
 
-    # ── 3. Meta description (fallback mínimo) ────────────────────────────
-    meta = soup.find("meta", attrs={"name": "description"})
-    if meta:
-        desc = meta.get("content", "").strip()
-        if len(desc) > 80:
-            log.info(f"  Previsão via meta description ({len(desc)} chars)")
-            return desc
+        # 3. Meta description (fallback mínimo)
+        meta = soup.find("meta", attrs={"name": "description"})
+        if meta:
+            desc = meta.get("content", "").strip()
+            if len(desc) > 80:
+                return desc
 
-    log.warning("  Nenhuma previsão encontrada.")
-    return None
+        log.warning("  Nenhuma previsão encontrada.")
+        return None
 
 
 # ─── Persistência ─────────────────────────────────────────────────────────────
@@ -339,7 +329,6 @@ class DatabaseManager:
         self.sb: Client = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
 
     def get_cached_predictions(self) -> Dict[str, dict]:
-        """Retorna {slug: {prediction, game_date}} para validação de cache."""
         res = (
             self.sb.table("nba_games_schedule")
             .select("slug, tactical_prediction, game_date")
@@ -354,8 +343,6 @@ class DatabaseManager:
         }
 
     def upsert_games(self, games: List[GameData]):
-        """Persiste jogos com deduplicação de segurança."""
-        # CORREÇÃO: Remove duplicatas por slug antes do upsert
         seen = set()
         unique_games = []
         for g in games:
@@ -363,7 +350,7 @@ class DatabaseManager:
                 seen.add(g.slug)
                 unique_games.append(g)
             else:
-                log.warning(f"Duplicata removida antes do upsert: {g.slug}")
+                log.warning(f"Duplicata removida: {g.slug}")
         
         if not unique_games:
             log.info("Nenhum jogo para persistir.")
@@ -376,7 +363,7 @@ class DatabaseManager:
 
 # ─── Orquestrador ─────────────────────────────────────────────────────────────
 async def main():
-    log.info("═══ Replicante V6.1 (Async) — iniciando ═══")
+    log.info("═══ Replicante V6.2 (Async) — iniciando ═══")
 
     if not Config.SCRAPINGANT_KEY:
         log.error("SCRAPINGANT_API_KEY ausente. Abortando.")
@@ -387,7 +374,6 @@ async def main():
     db = DatabaseManager()
 
     try:
-        # 1. Lista de jogos
         html_list = await net.fetch(Config.PREDICTIONS_URL)
         if not html_list:
             log.error("Falha ao carregar página de previsões.")
@@ -400,10 +386,8 @@ async def main():
             log.info(f"Nenhum jogo encontrado para {today_brt}.")
             return
 
-        # 2. Cache com validação de data
         cache = db.get_cached_predictions()
 
-        # 3. Hidratação assíncrona
         async def hydrate(game: GameData) -> GameData:
             cached = cache.get(game.slug, {})
             if cached.get("prediction") and cached.get("game_date") == game.game_date:
@@ -424,7 +408,6 @@ async def main():
             return_exceptions=True,
         )
 
-        # Filtra exceções
         valid_games = []
         for g, r in zip(games, results):
             if isinstance(r, Exception):
@@ -432,7 +415,6 @@ async def main():
             else:
                 valid_games.append(r)
 
-        # 4. Persistência
         db.upsert_games(valid_games)
 
     finally:
