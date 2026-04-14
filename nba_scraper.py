@@ -77,68 +77,75 @@ def extract_full_prediction(html: str | None) -> str | None:
     Extrai o texto completo e estruturado da previsão da página -prediction.
 
     Estratégia em cascata:
-    1. JSON-LD articleBody  → texto plano completo do artigo
-    2. Blocos semânticos HTML → headings + parágrafos na área de conteúdo
-    3. Meta description      → fallback mínimo
+    1. data-testid="DisplayContent" → seletor estável do scores24 (principal)
+    2. JSON-LD articleBody          → structured data fallback
+    3. Meta description             → fallback mínimo
     """
     if not html:
         return None
 
     soup = BeautifulSoup(html, "html.parser")
 
-    # ── Estratégia 1: JSON-LD articleBody ────────────────────────────────────
+    # ── Estratégia 1: data-testid="DisplayContent" ───────────────────────────
+    # O scores24 expõe data-testid como API pública — estável entre deploys CSS.
+    # Cada seção da previsão (Introdução, time A, time B, Pontos-chave, Conclusão)
+    # fica num <p> com o título da seção colado diretamente ao texto.
+    container = soup.find(attrs={"data-testid": "DisplayContent"})
+    if container:
+        _NICKNAMES = (
+            "Hawks|Celtics|Nets|Hornets|Bulls|Cavaliers|Mavericks|Nuggets|Pistons|"
+            "Warriors|Rockets|Pacers|Clippers|Lakers|Grizzlies|Heat|Bucks|"
+            "Timberwolves|Pelicans|Knicks|Thunder|Magic|76ers|Suns|"
+            "Trail Blazers|Kings|Spurs|Raptors|Jazz|Wizards"
+        )
+        HEADING_RE = re.compile(
+            r"^(Introdução|Conclusão|Pontos-chave"
+            rf"|(?:[A-ZÁÉÍÓÚÃÕÂÊÔÇ][a-záéíóúãõâêôçA-ZÁÉÍÓÚÃÕÂÊÔÇ]{{1,20}}"
+            rf"(?:\s(?:{_NICKNAMES}))))"
+            r"\s+"
+        )
+
+        sections, seen = [], set()
+        for p in container.find_all("p", recursive=True):
+            text = p.get_text(separator=" ", strip=True)
+            if not text or len(text) < 20:
+                continue
+            key = text[:60]
+            if key in seen:
+                continue
+            seen.add(key)
+
+            m = HEADING_RE.match(text)
+            if m:
+                heading = m.group(1)
+                body    = text[m.end():].strip()
+                sections.append(f"{heading}\n{body}")
+            else:
+                sections.append(text)
+
+        result = "\n\n".join(sections).strip()
+        if len(result) > 200:
+            log.info(f"  Previsão extraída via DisplayContent ({len(result)} chars)")
+            return result
+
+    # ── Estratégia 2: JSON-LD articleBody ────────────────────────────────────
     for script in soup.find_all("script", type="application/ld+json"):
         try:
             payload = json.loads(script.string or "")
-            body = ""
-            if isinstance(payload, list):
-                for item in payload:
-                    if item.get("@type") == "NewsArticle":
-                        body = item.get("articleBody", "")
-                        break
-            elif payload.get("@type") == "NewsArticle":
-                body = payload.get("articleBody", "")
-
-            if body and len(body) > 200:
-                log.info(f"  Previsão extraída via JSON-LD ({len(body)} chars)")
-                return body.strip()
+            items = payload if isinstance(payload, list) else [payload]
+            for item in items:
+                if item.get("@type") == "NewsArticle":
+                    body = item.get("articleBody", "").strip()
+                    if len(body) > 200:
+                        log.info(f"  Previsão extraída via JSON-LD ({len(body)} chars)")
+                        return body
         except (json.JSONDecodeError, AttributeError):
             pass
 
-    # ── Estratégia 2: Blocos semânticos do HTML ───────────────────────────────
-    # Encontra o container principal do artigo/previsão
-    article_container = (
-        soup.find("article") or
-        soup.find(attrs={"class": re.compile(r"prediction|article|content|preview", re.I)}) or
-        soup.find("main")
-    )
-
-    if article_container:
-        sections: list[str] = []
-        current_heading = ""
-
-        for tag in article_container.find_all(["h1", "h2", "h3", "h4", "p", "ul", "li"], recursive=True):
-            text = tag.get_text(separator=" ", strip=True)
-            if not text or len(text) < 15:
-                continue
-
-            if tag.name in ("h1", "h2", "h3", "h4"):
-                current_heading = text
-                sections.append(f"\n{text}\n")
-            elif tag.name == "p":
-                sections.append(text)
-            elif tag.name in ("ul", "li"):
-                sections.append(f"• {text}")
-
-        combined = "\n".join(sections).strip()
-        if len(combined) > 300:
-            log.info(f"  Previsão extraída via HTML semântico ({len(combined)} chars)")
-            return combined
-
-    # ── Estratégia 3: meta description (fallback mínimo) ─────────────────────
+    # ── Estratégia 3: Meta description (fallback mínimo) ─────────────────────
     meta = soup.find("meta", attrs={"name": "description"})
-    if meta and meta.get("content", ""):
-        desc = meta["content"].strip()
+    if meta:
+        desc = meta.get("content", "").strip()
         if len(desc) > 80:
             log.info(f"  Previsão extraída via meta description ({len(desc)} chars)")
             return desc
@@ -348,4 +355,4 @@ def run():
 
 if __name__ == "__main__":
     run()
-    
+        
