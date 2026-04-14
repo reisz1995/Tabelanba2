@@ -130,6 +130,7 @@ class GroqInsight(BaseModel):
     generated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
+
 class GameData(BaseModel):
     # Identificação
     slug: str
@@ -166,9 +167,8 @@ class GameData(BaseModel):
     tactical_prediction: Optional[str] = None
     groq_insight: Optional[GroqInsight] = None
 
-
-def to_groq_prompt(self) -> str:
-        """Gera prompt otimizado para Groq analisar o jogo."""
+    def to_groq_prompt(self) -> str:
+        """Gera prompt otimizado para Groq analisar o jogo com viés linear-pessimista."""
         
         # Calcula odds implícitas
         def implied_prob(odds: float) -> float:
@@ -185,7 +185,7 @@ def to_groq_prompt(self) -> str:
         home_form_str = f"{self.home_form.wins_last_10}/10 vitórias" if self.home_form and self.home_form.wins_last_10 else "N/A"
         away_form_str = f"{self.away_form.wins_last_10}/10 vitórias" if self.away_form and self.away_form.wins_last_10 else "N/A"
         
-        return f"""Você é um analista especialista em NBA betting. Analise este jogo e forneça recomendação profissional.
+        return f"""Você é o Estatístico Chefe de NBA. Analise este jogo e forneça recomendação profissional.
 
 ## DADOS DO JOGO
 {self.away_team} @ {self.home_team} | {self.game_date}
@@ -195,48 +195,32 @@ def to_groq_prompt(self) -> str:
 - Odds Visitante (V2): {self.odds.v2 if self.odds else 'N/A'} (implícita: {away_implied:.1f}%)
 
 ## CONTEXTO
-**H2H:** {self.h2h.total_matches if self.h2h else 'N/A'} jogos históricos, casa vence {self.h2h.home_win_pct if self.h2h else 'N/A'}%
-
+**H2H:** {self.h2h.total_matches if self.h2h else 'N/A'} jogos, casa vence {self.h2h.home_win_pct if self.h2h else 'N/A'}%
 **Forma Recente:**
 - Casa: {home_form_str}, Posição: {self.home_form.position_conference if self.home_form else 'N/A'}
 - Visitante: {away_form_str}, Posição: {self.away_form.position_conference if self.away_form else 'N/A'}
-
 **Lesões:**
 - Casa: {home_injuries}
 - Visitante: {away_injuries}
-
 **Estatísticas:**
-- Casa: {self.home_stats.points_scored_avg if self.home_stats else 'N/A'} pts marcados / {self.home_stats.points_allowed_avg if self.home_stats else 'N/A'} sofridos
-- Visitante: {self.away_stats.points_scored_avg if self.away_stats else 'N/A'} pts marcados / {self.away_stats.points_allowed_avg if self.away_stats else 'N/A'} sofridos
-- 3PT: Casa {self.home_stats.three_point.pct if self.home_stats and self.home_stats.three_point else 'N/A'}% vs Visitante {self.away_stats.three_point.pct if self.away_stats and self.away_stats.three_point else 'N/A'}%
-
-**Previsão da Redação (scores24):**
-Recomendação: {self.editorial_pick.recommendation if self.editorial_pick else 'N/A'}
-{self.editorial_pick.explanation if self.editorial_pick else ''}
-
-## ANÁLISE TEXTO COMPLETO
-{self.tactical_prediction[:1500] if self.tactical_prediction else 'N/A'}
+- Casa: {self.home_stats.points_scored_avg if self.home_stats else 'N/A'} marcados / {self.home_stats.points_allowed_avg if self.home_stats else 'N/A'} sofridos
+- Visitante: {self.away_stats.points_scored_avg if self.away_stats else 'N/A'} marcados / {self.away_stats.points_allowed_avg if self.away_stats else 'N/A'} sofridos
 
 ---
+ATENÇÃO - DIRETRIZ DE CÁLCULO (ENTROPIA):
+Aplique um modelo linear-pessimista para as projeções de pontos (Over/Under). Assuma a entropia natural do jogo (cansaço acumulado, desfalques repentinos, e o clássico blowout no 4º quarto). Você deve descontar uma margem de segurança pessimista nas médias ofensivas brutas antes de validar a linha justa.
 
 Forneça sua análise em JSON estrito:
-
 {{
   "confidence_score": 0.0 a 5.0,
-  "fair_line": "ex: +3.5 ou -2.5",
+  "fair_line": "ex: +3.5 ou -2.5 ou O/U 225.5",
   "edge_percentage": 0.0 a 50.0,
   "key_factors": ["fator 1", "fator 2", "fator 3"],
   "recommendation": "OVER ou UNDER ou FAVORITE ou DOG ou PASS",
   "stake_units": 0.5 a 5.0,
-  "reasoning": "explicação detalhada em português"
-}}
-
-Regras:
-- confidence_score > 3.5 = alta confiança
-- edge_percentage > 5% = valor significativo
-- Se não houver valor, recomende "PASS"
-- Considere lesões, forma, H2H e matchups táticos"""
-
+  "reasoning": "explicação tática/matemática em português"
+}}"""
+      
 
 # ─── Camada de Rede ───────────────────────────────────────────────────────────
 class NetworkClient:
@@ -853,7 +837,11 @@ async def main():
                         f"news={bool(game.home_news)}")
 
                 # Gera insight com Groq (se tiver dados mínimos)
-                if Config.GROQ_API_KEY and game.odds and game.tactical_prediction:
+
+
+                # Gera insight com Groq (permite projeção cega caso as odds atrasem)
+                if Config.GROQ_API_KEY and (game.tactical_prediction or (game.home_form and game.away_form)):
+                    log.info(f"[{game.away_tri} @ {game.home_tri}] → Iniciando inferência (Odds no mercado: {bool(game.odds)})")
                     prompt = game.to_groq_prompt()
                     insight = await net.post_groq(prompt)
                     if insight:
