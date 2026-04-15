@@ -935,7 +935,9 @@ async def main():
 
         async def process(game: GameData) -> GameData:
             cached = cache.get(game.slug, {})
-            needs_update = not cached.get("has_text") or not cached.get("has_groq")
+            # PATCH 6: Forçar reprocessamento se tactical_prediction estiver vazio
+            has_empty_text = cached.get("has_text") and not cached.get("text_length", 0)
+            needs_update = not cached.get("has_text") or not cached.get("has_groq") or has_empty_text
             
             if not needs_update and cached.get("game_date") == game.game_date:
                 log.info(f"[{game.away_tri} @ {game.home_tri}] → Cache OK")
@@ -951,6 +953,14 @@ async def main():
             
             if html:
                 ext.extract_full_prediction(html, game)
+
+                # PATCH 4: Fallback de extração
+                if not game.tactical_prediction:
+                    soup = BeautifulSoup(html, "html.parser")
+                    body = soup.get_text(" ", strip=True)
+                    if len(body) > 2000:
+                        log.warning(f"[{game.away_tri} @ {game.home_tri}] → fallback BODY")
+                        game.tactical_prediction = body[:15000]
 
                 # PATCH 4: Fallback de extração
                 if not game.tactical_prediction:
