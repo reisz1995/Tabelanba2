@@ -942,17 +942,15 @@ async def main():
 
             return game
 
-        # 🔥 EXECUÇÃO SEQUENCIAL (ANTI-409)
+
+        # ✅ ÚNICO BLOCO DE EXECUÇÃO
         results = []
 
         for g in games:
             result = await process(g)
             results.append(result)
-
-            # ⏱️ delay anti-bloqueio
             await asyncio.sleep(1.5)
 
-        # Filtrar válidos
         valid = []
         for g, r in zip(games, results):
             if isinstance(r, Exception):
@@ -971,34 +969,6 @@ async def main():
     finally:
         await net.close()
 
-try:
-    html_list = await net.fetch(...)
-    ...
 
-    results = []
-
-    for g in games:
-        result = await process(g)
-        results.append(result)
-        await asyncio.sleep(1.5)
-
-    valid = []
-    for g, r in zip(games, results):
-        if isinstance(r, Exception):
-            log.error(...)
-        else:
-            valid.append(r)
-
-    if valid:
-        db.upsert_games(valid)
-
-    with_text = sum(1 for g in valid if g.tactical_prediction)
-    with_groq = sum(1 for g in valid if g.groq_insight)
-
-    log.info(f"Resumo: {len(valid)} jogos | Texto:{with_text} | Groq:{with_groq}")
-
-finally:
-    await net.close()
-  
 if __name__ == "__main__":
     asyncio.run(main())
