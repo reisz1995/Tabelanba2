@@ -232,7 +232,7 @@ class NetworkClient:
                     if attempt == retries:
                         log.warning(f"Erro HTTP {e.response.status_code}")
                         return None
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(2.5)
                 except Exception as e:
                     log.warning(f"Erro rede: {e}")
                     return None
@@ -293,6 +293,37 @@ class NetworkClient:
     async def close(self):
         await self.client.aclose()
 
+
+
+
+async def fetch_with_retry(net, url: str) -> Optional[str]:
+    """Retry robusto + alternância de browser"""
+
+    log.info(f"[FETCH] {url[-60:]}")
+
+    # 1️⃣ tentativa (browser=True)
+    html = await net.fetch(url, use_browser=True)
+    if html:
+        return html
+
+    await asyncio.sleep(2)
+
+    # 2️⃣ tentativa (browser=False)
+    log.warning(f"[RETRY] browser=False → {url[-40:]}")
+    html = await net.fetch(url, use_browser=False)
+    if html:
+        return html
+
+    await asyncio.sleep(3)
+
+    # 3️⃣ tentativa final (browser=True)
+    log.warning(f"[RETRY FINAL] browser=True → {url[-40:]}")
+    html = await net.fetch(url, use_browser=True)
+
+    if not html:
+        log.error(f"[FAIL TOTAL] {url[-60:]}")
+
+    return html
 
 # ─── Extração ─────────────────────────────────────────────────────────────────
 class NBAExtractor:
@@ -912,10 +943,22 @@ async def main():
 
             # NOVO: use_browser=True para páginas de detalhe (mais créditos mas renderiza JS)
             pred_url = f"{game.source_url}-prediction"
-            html = await net.fetch(pred_url, use_browser=True)
+
+            # PATCH 5: Log de debug
+            log.info(f"[{game.away_tri} @ {game.home_tri}] → tentando fetch")
+
+            html = await fetch_with_retry(net, pred_url)
             
             if html:
                 ext.extract_full_prediction(html, game)
+
+                # PATCH 4: Fallback de extração
+                if not game.tactical_prediction:
+                    soup = BeautifulSoup(html, "html.parser")
+                    body = soup.get_text(" ", strip=True)
+                    if len(body) > 2000:
+                        log.warning(f"[{game.away_tri} @ {game.home_tri}] → fallback BODY")
+                        game.tactical_prediction = body[:15000]
                 
                 has_text = bool(game.tactical_prediction)
                 
