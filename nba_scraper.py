@@ -211,33 +211,27 @@ class NetworkClient:
         self.client    = httpx.AsyncClient(follow_redirects=True, timeout=60)
         self.semaphore = asyncio.Semaphore(Config.CONCURRENCY_LIMIT)
 
-    async def fetch(self, url: str, retries: int = 2, use_browser: bool = False) -> Optional[str]:
-        async with self.semaphore:
-            for attempt in range(retries + 1):
-                try:
-                    target = self._prepare_url(url, use_browser=use_browser)
-                    log.info(f"Fetch: {url[:60]}... (browser={use_browser})")
-                    resp = await self.client.get(target)
-                    
-                    if resp.status_code == 409 and attempt < retries:
-                        wait = 2 ** attempt
-                        log.warning(f"409 retry em {wait}s...")
-                        await asyncio.sleep(wait)
-                        continue
-                        
-                    resp.raise_for_status()
-                    return resp.text
-                    
-                except httpx.HTTPStatusError as e:
-                    if attempt == retries:
-                        log.warning(f"Erro HTTP {e.response.status_code}")
-                        return None
-                    await asyncio.sleep(1)
-                except Exception as e:
-                    log.warning(f"Erro rede: {e}")
-                    return None
-            return None
+    
+async def fetch_with_retry(net, url: str) -> Optional[str]:
+    """Fetch robusto com fallback automático."""
+    
+    # 1ª tentativa: browser=true
+    html = await net.fetch(url, retries=2, use_browser=True)
+    
+    if html:
+        return html
 
+    log.warning(f"[FALLBACK] Tentando sem browser: {url[-50:]}")
+    
+    # 2ª tentativa: browser=false
+    html = await net.fetch(url, retries=1, use_browser=False)
+    
+    if html:
+        return html
+
+    log.error(f"[FAIL] Não conseguiu HTML: {url[-50:]}")
+    return None
+  
     async def post_groq(self, prompt: str) -> Optional[GroqInsight]:
         if not Config.GROQ_API_KEY:
             log.warning("GROQ_API_KEY não configurada")
@@ -934,8 +928,13 @@ async def main():
 
             return game
 
-        results = await asyncio.gather(*(process(g) for g in games), return_exceptions=True)
-
+    results = []
+    for g in games:
+    result = await process(g)
+    results.append(result)
+    # 🔥 delay anti-bloqueio
+    await asyncio.sleep(1.5)
+      
         valid = []
         for g, r in zip(games, results):
             if isinstance(r, Exception):
