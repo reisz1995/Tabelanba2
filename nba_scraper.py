@@ -970,20 +970,20 @@ async def main():
 
     finally:
         await net.close()
-  
-    results = []
-    for g in games:
+
+results = []
+
+for g in games:
     result = await process(g)
     results.append(result)
-    # 🔥 delay anti-bloqueio
     await asyncio.sleep(1.5)
-      
-        valid = []
-        for g, r in zip(games, results):
-            if isinstance(r, Exception):
-                log.error(f"[{g.away_tri} @ {g.home_tri}] → Erro: {r}")
-            else:
-                valid.append(r)
+
+valid = []
+for g, r in zip(games, results):
+    if isinstance(r, Exception):
+        log.error(f"[{g.away_tri} @ {g.home_tri}] → Erro: {r}")
+    else:
+        valid.append(r)
 
         if valid:
             db.upsert_games(valid)
