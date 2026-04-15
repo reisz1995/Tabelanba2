@@ -869,19 +869,18 @@ class DatabaseManager:
 
 # ─── Orquestrador ─────────────────────────────────────────────────────────────
 async def main():
-    log.info("═══ Replicante V6.5.4 (Fix Extração Texto + JS Rendering) ═══")
+    log.info("═══ Replicante V6.6 (Anti-409 + Extração Blindada) ═══")
 
     if not Config.SCRAPINGANT_KEY:
         log.error("SCRAPINGANT_API_KEY ausente")
         return
-    if not Config.GROQ_API_KEY:
-        log.warning("GROQ_API_KEY ausente - insights desativados")
 
     net = NetworkClient()
     ext = NBAExtractor()
     db = DatabaseManager()
 
     try:
+        # 📥 Lista de jogos
         html_list = await net.fetch(Config.PREDICTIONS_URL, use_browser=False)
         if not html_list:
             log.error("Falha ao carregar lista")
@@ -896,54 +895,81 @@ async def main():
 
         cache = db.get_cached()
 
-async def process(game: GameData) -> GameData:
-    cached = cache.get(game.slug, {})
-    needs_update = not cached.get("has_text") or not cached.get("has_groq")
-    
-    if not needs_update and cached.get("game_date") == game.game_date:
-        log.info(f"[{game.away_tri} @ {game.home_tri}] → Cache OK")
-        return game
+        # 🔥 FUNÇÃO PROCESS (FORA de try interno problemático)
+        async def process(game: GameData) -> GameData:
+            cached = cache.get(game.slug, {})
+            needs_update = not cached.get("has_text") or not cached.get("has_groq")
 
-    pred_url = f"{game.source_url}-prediction"
-    
-    html = await fetch_with_retry(net, pred_url)
+            if not needs_update and cached.get("game_date") == game.game_date:
+                log.info(f"[{game.away_tri} @ {game.home_tri}] → Cache OK")
+                return game
 
-    if not html:
-        log.warning(f"[{game.away_tri} @ {game.home_tri}] → SEM HTML FINAL")
-        return game
+            pred_url = f"{game.source_url}-prediction"
 
-    # DEBUG útil
-    log.info(f"[{game.away_tri} @ {game.home_tri}] → HTML OK ({len(html)} chars)")
+            html = await fetch_with_retry(net, pred_url)
 
-    ext.extract_full_prediction(html, game)
+            if not html:
+                log.warning(f"[{game.away_tri} @ {game.home_tri}] → SEM HTML FINAL")
+                return game
 
-    has_text = bool(game.tactical_prediction)
+            log.info(f"[{game.away_tri} @ {game.home_tri}] → HTML OK ({len(html)} chars)")
 
-    log.info(
-        f"[{game.away_tri} @ {game.home_tri}] → "
-        f"Texto:{has_text} ({len(game.tactical_prediction) if game.tactical_prediction else 0})"
-    )
+            # Extração normal
+            ext.extract_full_prediction(html, game)
 
-    if not game.tactical_prediction:
-        # 🔥 fallback bruto
-        soup = BeautifulSoup(html, "html.parser")
-        body_text = soup.get_text(" ", strip=True)
+            # 🔥 fallback bruto (se extractor falhar)
+            if not game.tactical_prediction:
+                soup = BeautifulSoup(html, "html.parser")
+                body_text = soup.get_text(" ", strip=True)
 
-        if len(body_text) > 2000:
-            log.warning(f"[{game.away_tri} @ {game.home_tri}] → USANDO BODY RAW")
-            game.tactical_prediction = body_text[:15000]
+                if len(body_text) > 2000:
+                    log.warning(f"[{game.away_tri} @ {game.home_tri}] → USANDO BODY RAW")
+                    game.tactical_prediction = body_text[:15000]
 
-    # GROQ
-    if Config.GROQ_API_KEY and game.tactical_prediction:
-        prompt = game.to_groq_prompt()
-        insight = await net.post_groq(prompt)
-        if insight:
-            game.groq_insight = insight
-    elif not game.tactical_prediction:
-        log.warning(f"[{game.away_tri} @ {game.home_tri}] → Sem texto para Groq!")
+            log.info(
+                f"[{game.away_tri} @ {game.home_tri}] → Texto:"
+                f"{bool(game.tactical_prediction)}"
+            )
 
-    return game
+            # 🤖 GROQ
+            if Config.GROQ_API_KEY and game.tactical_prediction:
+                prompt = game.to_groq_prompt()
+                insight = await net.post_groq(prompt)
+                if insight:
+                    game.groq_insight = insight
+            else:
+                log.warning(f"[{game.away_tri} @ {game.home_tri}] → Sem texto para Groq")
 
+            return game
+
+        # 🔥 EXECUÇÃO SEQUENCIAL (ANTI-409)
+        results = []
+
+        for g in games:
+            result = await process(g)
+            results.append(result)
+
+            # ⏱️ delay anti-bloqueio
+            await asyncio.sleep(1.5)
+
+        # Filtrar válidos
+        valid = []
+        for g, r in zip(games, results):
+            if isinstance(r, Exception):
+                log.error(f"[{g.away_tri} @ {g.home_tri}] → Erro: {r}")
+            else:
+                valid.append(r)
+
+        if valid:
+            db.upsert_games(valid)
+
+        with_text = sum(1 for g in valid if g.tactical_prediction)
+        with_groq = sum(1 for g in valid if g.groq_insight)
+
+        log.info(f"═══ Resumo: {len(valid)} jogos | Texto:{with_text} | Groq:{with_groq} ═══")
+
+    finally:
+        await net.close()
   
     results = []
     for g in games:
