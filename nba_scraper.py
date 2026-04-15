@@ -1,9 +1,10 @@
 """
-NBA Scraper - Replicante V6.5.4 (Fix Extração de Texto + JS Rendering)
+NBA Scraper - Replicante V6.5.4 (Fix Extração de Texto + JS Rendering + Sequential Processing)
 Correções:
   - [FIX] browser=true para renderizar JavaScript
   - [FIX] Seletores específicos do scores24
   - [FIX] Extração via JSON-LD como fallback
+  - [PATCH 1-7] Retry robusto, fallback de extração, processamento sequencial
 """
 
 import os
@@ -232,7 +233,7 @@ class NetworkClient:
                     if attempt == retries:
                         log.warning(f"Erro HTTP {e.response.status_code}")
                         return None
-                    await asyncio.sleep(2.5)
+                    await asyncio.sleep(1)
                 except Exception as e:
                     log.warning(f"Erro rede: {e}")
                     return None
@@ -294,8 +295,7 @@ class NetworkClient:
         await self.client.aclose()
 
 
-
-
+# ─── PATCH 1: fetch_with_retry ─────────────────────────────────────────────────
 async def fetch_with_retry(net, url: str) -> Optional[str]:
     """Retry robusto + alternância de browser"""
 
@@ -945,23 +945,16 @@ async def main():
 
             # NOVO: use_browser=True para páginas de detalhe (mais créditos mas renderiza JS)
             pred_url = f"{game.source_url}-prediction"
-
+            
             # PATCH 5: Log de debug
             log.info(f"[{game.away_tri} @ {game.home_tri}] → tentando fetch")
-
+            
+            # PATCH 2: Usar fetch_with_retry em vez de net.fetch direto
             html = await fetch_with_retry(net, pred_url)
             
             if html:
                 ext.extract_full_prediction(html, game)
-
-                # PATCH 4: Fallback de extração
-                if not game.tactical_prediction:
-                    soup = BeautifulSoup(html, "html.parser")
-                    body = soup.get_text(" ", strip=True)
-                    if len(body) > 2000:
-                        log.warning(f"[{game.away_tri} @ {game.home_tri}] → fallback BODY")
-                        game.tactical_prediction = body[:15000]
-
+                
                 # PATCH 4: Fallback de extração
                 if not game.tactical_prediction:
                     soup = BeautifulSoup(html, "html.parser")
@@ -987,7 +980,17 @@ async def main():
 
             return game
 
-        results = await asyncio.gather(*(process(g) for g in games), return_exceptions=True)
+        # PATCH 7: Processamento sequencial (um jogo por vez) para evitar 409 no ScrapingAnt
+        results = []
+        for g in games:
+            try:
+                result = await process(g)
+                results.append(result)
+            except Exception as e:
+                results.append(e)
+                log.error(f"[{g.away_tri} @ {g.home_tri}] → Erro: {e}")
+            # Delay entre jogos para evitar concorrência no ScrapingAnt
+            await asyncio.sleep(3)
 
         valid = []
         for g, r in zip(games, results):
