@@ -896,38 +896,55 @@ async def main():
 
         cache = db.get_cached()
 
-        async def process(game: GameData) -> GameData:
-            cached = cache.get(game.slug, {})
-            needs_update = not cached.get("has_text") or not cached.get("has_groq")
-            
-            if not needs_update and cached.get("game_date") == game.game_date:
-                log.info(f"[{game.away_tri} @ {game.home_tri}] → Cache OK")
-                return game
+async def process(game: GameData) -> GameData:
+    cached = cache.get(game.slug, {})
+    needs_update = not cached.get("has_text") or not cached.get("has_groq")
+    
+    if not needs_update and cached.get("game_date") == game.game_date:
+        log.info(f"[{game.away_tri} @ {game.home_tri}] → Cache OK")
+        return game
 
-            # NOVO: use_browser=True para páginas de detalhe (mais créditos mas renderiza JS)
-            pred_url = f"{game.source_url}-prediction"
-            html = await net.fetch(pred_url, use_browser=True)
-            
-            if html:
-                ext.extract_full_prediction(html, game)
-                
-                has_text = bool(game.tactical_prediction)
-                
-                log.info(f"[{game.away_tri} @ {game.home_tri}] → "
-                        f"Texto:{has_text} ({len(game.tactical_prediction) if game.tactical_prediction else 0} chars)")
+    pred_url = f"{game.source_url}-prediction"
+    
+    html = await fetch_with_retry(net, pred_url)
 
-                if Config.GROQ_API_KEY and game.tactical_prediction:
-                    prompt = game.to_groq_prompt()
-                    insight = await net.post_groq(prompt)
-                    if insight:
-                        game.groq_insight = insight
-                elif not game.tactical_prediction:
-                    log.warning(f"[{game.away_tri} @ {game.home_tri}] → Sem texto para Groq!")
-            else:
-                log.warning(f"[{game.away_tri} @ {game.home_tri}] → Sem HTML")
+    if not html:
+        log.warning(f"[{game.away_tri} @ {game.home_tri}] → SEM HTML FINAL")
+        return game
 
-            return game
+    # DEBUG útil
+    log.info(f"[{game.away_tri} @ {game.home_tri}] → HTML OK ({len(html)} chars)")
 
+    ext.extract_full_prediction(html, game)
+
+    has_text = bool(game.tactical_prediction)
+
+    log.info(
+        f"[{game.away_tri} @ {game.home_tri}] → "
+        f"Texto:{has_text} ({len(game.tactical_prediction) if game.tactical_prediction else 0})"
+    )
+
+    if not game.tactical_prediction:
+        # 🔥 fallback bruto
+        soup = BeautifulSoup(html, "html.parser")
+        body_text = soup.get_text(" ", strip=True)
+
+        if len(body_text) > 2000:
+            log.warning(f"[{game.away_tri} @ {game.home_tri}] → USANDO BODY RAW")
+            game.tactical_prediction = body_text[:15000]
+
+    # GROQ
+    if Config.GROQ_API_KEY and game.tactical_prediction:
+        prompt = game.to_groq_prompt()
+        insight = await net.post_groq(prompt)
+        if insight:
+            game.groq_insight = insight
+    elif not game.tactical_prediction:
+        log.warning(f"[{game.away_tri} @ {game.home_tri}] → Sem texto para Groq!")
+
+    return game
+
+  
     results = []
     for g in games:
     result = await process(g)
