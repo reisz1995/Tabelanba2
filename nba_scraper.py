@@ -1,24 +1,23 @@
 import asyncio
-import random
 import httpx
 import logging
-import os
+import random
 from datetime import datetime
-from bs4 import BeautifulSoup
 from typing import Optional, List
+from bs4 import BeautifulSoup
 from supabase import create_client
 
 # ================= CONFIG =================
 class Config:
-    SCRAPINGANT_KEY = os.getenv("SCRAPINGANT_KEY")
-    GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-    SUPABASE_URL = os.getenv("SUPABASE_URL")
-    SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+    SCRAPINGANT_KEY = "SUA_API_KEY"
+    GROQ_API_KEY = "SUA_GROQ_KEY"
+    SUPABASE_URL = "SUA_URL"
+    SUPABASE_KEY = "SUA_KEY"
     PREDICTIONS_URL = "https://scores24.live/pt/basketball/l-usa-nba/predictions"
 
 # ================= LOG =================
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("NBA-V6.8")
+log = logging.getLogger("NBA-V6.5.5")
 
 # ================= MODEL =================
 class GameData:
@@ -30,6 +29,9 @@ class GameData:
         self.tactical_prediction = None
         self.groq_insight = None
         self.game_date = datetime.utcnow().date().isoformat()
+
+        self.home_tri = home[:3].upper()
+        self.away_tri = away[:3].upper()
 
     def to_dict(self):
         return {
@@ -50,25 +52,12 @@ class NetworkClient:
     def __init__(self):
         self.base_url = "https://api.scrapingant.com/v2/general"
 
-    async def fetch(self, url, use_browser=True, retries=3):
-        for attempt in range(retries):
-            try:
-                html = await self._request(url, use_browser)
-                if html:
-                    return html
-            except Exception as e:
-                log.warning(f"[FETCH] tentativa {attempt+1}: {e}")
-
-            await asyncio.sleep((2**attempt) + random.uniform(0.5,1.5))
-            use_browser = not use_browser
-
-        return None
-
-    async def _request(self, url, use_browser):
+    async def fetch(self, url, use_browser=True):
         params = {
             "url": url,
             "x-api-key": Config.SCRAPINGANT_KEY,
-            "browser": "true" if use_browser else "false"
+            "browser": "true" if use_browser else "false",
+            "proxy_country": "us"
         }
 
         async with httpx.AsyncClient(timeout=30) as client:
@@ -76,10 +65,11 @@ class NetworkClient:
 
             if r.status_code == 200:
                 return r.text
-            if r.status_code in [403,409,429]:
-                raise Exception(f"Bloqueio {r.status_code}")
 
-        return None
+            if r.status_code in [403, 409, 429]:
+                raise Exception(f"HTTP {r.status_code}")
+
+            return None
 
     async def post_groq(self, prompt):
         try:
@@ -91,33 +81,51 @@ class NetworkClient:
                     },
                     json={
                         "model": "llama3-70b-8192",
-                        "messages": [{"role":"user","content":prompt}]
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0.2
                     }
                 )
+
                 if r.status_code == 200:
                     return r.json()["choices"][0]["message"]["content"]
+
         except Exception as e:
-            log.error(e)
+            log.error(f"[GROQ] {e}")
 
         return None
 
-# ================= DB =================
-class DatabaseManager:
-    def __init__(self):
-        self.client = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+    async def close(self):
+        pass
 
-    def upsert_games(self, games: List[GameData]):
-        payload = [g.to_dict() for g in games]
+# ================= RETRY (PATCH PRINCIPAL) =================
+async def fetch_with_retry(net, url: str) -> Optional[str]:
+    log.info(f"[FETCH] {url[-60:]}")
 
-        try:
-            res = self.client.table("nba_games_schedule") \
-                .upsert(payload, on_conflict="slug") \
-                .execute()
+    try:
+        html = await net.fetch(url, use_browser=True)
+        if html:
+            return html
+    except Exception as e:
+        log.warning(f"[RETRY1] {e}")
 
-            log.info(f"Supabase: {len(payload)} registros enviados")
+    await asyncio.sleep(2)
 
-        except Exception as e:
-            log.error(f"Supabase erro: {e}")
+    try:
+        html = await net.fetch(url, use_browser=False)
+        if html:
+            return html
+    except Exception as e:
+        log.warning(f"[RETRY2] {e}")
+
+    await asyncio.sleep(3)
+
+    try:
+        html = await net.fetch(url, use_browser=True)
+        return html
+    except Exception as e:
+        log.error(f"[FAIL] {url[-50:]} → {e}")
+
+    return None
 
 # ================= EXTRACTOR =================
 class NBAExtractor:
@@ -154,43 +162,99 @@ class NBAExtractor:
                 game.tactical_prediction = text
                 return
 
-        body = soup.get_text(" ", strip=True)
-        if len(body) > 2000:
-            game.tactical_prediction = body[:15000]
+# ================= DATABASE =================
+class DatabaseManager:
+    def __init__(self):
+        if not Config.SUPABASE_URL or not Config.SUPABASE_KEY:
+            log.warning("Sem Supabase configurado")
+            self.client = None
+        else:
+            self.client = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+
+    def upsert_games(self, games):
+        if not self.client:
+            return
+
+        payload = [g.to_dict() for g in games]
+
+        try:
+            self.client.table("nba_games_schedule") \
+                .upsert(payload, on_conflict="slug") \
+                .execute()
+
+            log.info(f"Supabase OK: {len(payload)} jogos")
+
+        except Exception as e:
+            log.error(f"Supabase erro: {e}")
 
 # ================= MAIN =================
 async def main():
-    log.info("═══ NBA SCRAPER V6.8 SUPABASE ═══")
+    log.info("═══ NBA SCRAPER ORIGINAL CORRIGIDO ═══")
 
     net = NetworkClient()
     ext = NBAExtractor()
     db = DatabaseManager()
 
-    html = await net.fetch(Config.PREDICTIONS_URL)
+    try:
+        html_list = await net.fetch(Config.PREDICTIONS_URL, use_browser=False)
 
-    games = ext.extract_games_list(html)
+        if not html_list:
+            log.error("Falha ao carregar lista")
+            return
 
-    async def process(game):
-        html = await net.fetch(f"{game.source_url}-prediction")
+        games = ext.extract_games_list(html_list)
 
-        if not html:
+        if not games:
+            log.info("Sem jogos")
+            return
+
+        async def process(game):
+            log.info(f"[{game.away_tri} @ {game.home_tri}] → start")
+
+            pred_url = f"{game.source_url}-prediction"
+
+            html = await fetch_with_retry(net, pred_url)
+
+            if not html:
+                log.warning(f"[{game.away_tri} @ {game.home_tri}] → SEM HTML")
+                return game
+
+            ext.extract_full_prediction(html, game)
+
+            # 🔥 fallback
+            if not game.tactical_prediction:
+                soup = BeautifulSoup(html, "html.parser")
+                body = soup.get_text(" ", strip=True)
+
+                if len(body) > 2000:
+                    log.warning(f"[{game.away_tri} @ {game.home_tri}] → fallback BODY")
+                    game.tactical_prediction = body[:15000]
+
+            if game.tactical_prediction:
+                game.groq_insight = await net.post_groq(game.to_groq_prompt())
+
+            log.info(
+                f"[{game.away_tri} @ {game.home_tri}] "
+                f"Texto:{bool(game.tactical_prediction)}"
+            )
+
             return game
 
-        ext.extract_full_prediction(html, game)
+        results = []
 
-        if game.tactical_prediction:
-            game.groq_insight = await net.post_groq(game.to_groq_prompt())
+        for g in games:
+            result = await process(g)
+            results.append(result)
 
-        return game
+            # 🔥 delay aumentado (ANTI-409)
+            await asyncio.sleep(2.5)
 
-    results = []
+        db.upsert_games(results)
 
-    for g in games:
-        r = await process(g)
-        results.append(r)
-        await asyncio.sleep(1.5)
+        log.info(f"Finalizado: {len(results)} jogos")
 
-    db.upsert_games(results)
+    finally:
+        await net.close()
 
 # ================= RUN =================
 if __name__ == "__main__":
