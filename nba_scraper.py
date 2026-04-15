@@ -971,31 +971,34 @@ async def main():
     finally:
         await net.close()
 
-results = []
+try:
+    html_list = await net.fetch(...)
+    ...
 
-for g in games:
-    result = await process(g)
-    results.append(result)
-    await asyncio.sleep(1.5)
+    results = []
 
-valid = []
-for g, r in zip(games, results):
-    if isinstance(r, Exception):
-        log.error(f"[{g.away_tri} @ {g.home_tri}] → Erro: {r}")
-    else:
-        valid.append(r)
+    for g in games:
+        result = await process(g)
+        results.append(result)
+        await asyncio.sleep(1.5)
 
-        if valid:
-            db.upsert_games(valid)
+    valid = []
+    for g, r in zip(games, results):
+        if isinstance(r, Exception):
+            log.error(...)
+        else:
+            valid.append(r)
 
-        with_text = sum(1 for g in valid if g.tactical_prediction)
-        with_groq = sum(1 for g in valid if g.groq_insight)
-        
-        log.info(f"═══ Resumo: {len(valid)} jogos | Texto:{with_text} | Groq:{with_groq} ═══")
+    if valid:
+        db.upsert_games(valid)
 
-    finally:
-        await net.close()
+    with_text = sum(1 for g in valid if g.tactical_prediction)
+    with_groq = sum(1 for g in valid if g.groq_insight)
 
+    log.info(f"Resumo: {len(valid)} jogos | Texto:{with_text} | Groq:{with_groq}")
 
+finally:
+    await net.close()
+  
 if __name__ == "__main__":
     asyncio.run(main())
