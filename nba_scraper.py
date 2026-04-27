@@ -1,9 +1,9 @@
 """
-NBA Scraper - Replicante V6.6.1 (Purificação Estrutural e DOM Profundo)
-Correcções:
-  - [UPDATE] Inversão de hierarquia: DOM profundo primário, JSON-LD como fallback.
-  - [FIX] Motor heurístico focado exclusivamente em tags semânticas (p, h2, h3).
-  - [FIX] Expurgo agressivo de nós parasitas e controlo rigoroso de densidade numérica.
+NBA Scraper - Kimi/Replicante V6.6.3 (Zona de Imunidade e Captura Absoluta)
+Correcções e Optimizacões:
+  - [UPDATE] Identidade operacional assumida: Kimi.
+  - [FIX] Implementação do Absolute Capture Mode para a Previsão da Redacção.
+  - [FIX] Protecção contra bloqueio numérico de handicaps e odds no texto final.
 """
 
 import os
@@ -24,7 +24,7 @@ from supabase import create_client, Client
 # ─── Logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] [NBA-V6.6.1] %(message)s",
+    format="%(asctime)s [%(levelname)s] [NBA-V6.6.3] %(message)s",
 )
 log = logging.getLogger(__name__)
 
@@ -187,8 +187,8 @@ Forma: Casa {home_form_str} vs Visitante {away_form_str}
 Lesões Casa: {home_injuries}
 Lesões Visitante: {away_injuries}
 
-## ANÁLISE COMPLETA
-{self.tactical_prediction[:2500] if self.tactical_prediction else 'N/A'}
+## ANÁLISE COMPLETA E PREVISÃO DA REDACÇÃO
+{self.tactical_prediction[:3000] if self.tactical_prediction else 'N/A'}
 
 ---
 DIRETRIZ: Use modelo linear-pessimista. Desconte margem de segurança nas médias ofensivas.
@@ -201,7 +201,7 @@ Retorne JSON:
   "key_factors": ["fator 1", "fator 2"],
   "recommendation": "OVER/UNDER/FAVORITE/DOG/PASS",
   "stake_units": 0.5 a 5.0,
-  "reasoning": "explicação em português"
+  "reasoning": "explicação em português baseado rigidamente nos dados fornecidos"
 }}"""
 
 
@@ -245,7 +245,7 @@ class NetworkClient:
         
         try:
             async with self.semaphore:
-                log.info("  → Groq processando...")
+                log.info("  → Groq processando inferência estocástica...")
                 response = await self.client.post(
                     "https://api.groq.com/openai/v1/chat/completions",
                     headers={
@@ -255,10 +255,10 @@ class NetworkClient:
                     json={
                         "model": Config.GROQ_MODEL,
                         "messages": [
-                            {"role": "system", "content": "Você é um analista de NBA especializado em modelos estocásticos. Responda APENAS em JSON válido."},
+                            {"role": "system", "content": "Você é o Estatístico Chefe. Responda APENAS em JSON válido."},
                             {"role": "user", "content": prompt}
                         ],
-                        "temperature": 0.3,
+                        "temperature": 0.2,
                         "max_tokens": 1500,
                         "response_format": {"type": "json_object"}
                     },
@@ -316,7 +316,7 @@ async def fetch_with_retry(net, url: str) -> Optional[str]:
 
     return html
 
-# ─── Extração ─────────────────────────────────────────────────────────────────
+# ─── Extracção ────────────────────────────────────────────────────────────────
 class NBAExtractor:
     
     @staticmethod
@@ -464,10 +464,10 @@ class NBAExtractor:
         game.home_stats, game.away_stats = self._extract_stats(soup, game)
         game.editorial_pick = self._extract_editorial(soup)
         
-        # O novo fluxo de extracção narrativa V6.6.1
+        # Fluxo de extracção narrativa principal (Chama a heurística V6.6.3)
         game.tactical_prediction = self._extract_text_v3(soup)
         
-        log.info(f"  → Texto: {len(game.tactical_prediction) if game.tactical_prediction else 0} chars | "
+        log.info(f"  → Texto extraído: {len(game.tactical_prediction) if game.tactical_prediction else 0} chars | "
                 f"Odds: {bool(game.odds)} | H2H: {bool(game.h2h)}")
 
     def _extract_odds(self, soup: BeautifulSoup) -> Optional[OddsData]:
@@ -626,7 +626,7 @@ class NBAExtractor:
             return None
 
     def _extract_json_ld(self, soup: BeautifulSoup) -> Optional[str]:
-        """Extrai texto de JSON-LD (structured data)."""
+        """Extrai texto de JSON-LD estruturado como plano de segurança."""
         try:
             for script in soup.find_all("script", type="application/ld+json"):
                 try:
@@ -652,10 +652,7 @@ class NBAExtractor:
             return None
 
     def _extract_text_v3(self, soup: BeautifulSoup) -> Optional[str]:
-        """
-        EXTRACÇÃO REVISADA (V6.6.1): Varredura total do DOM.
-        JSON-LD rebaixado para fallback devido à limitação de payload estrutural.
-        """
+        """EXTRACÇÃO REVISADA (V6.6.3): Prioridade para varredura total do DOM e controlo do JSON."""
         
         main_content = soup.find("main") or soup.find("body")
         if main_content:
@@ -671,15 +668,16 @@ class NBAExtractor:
 
         return None
 
-    def _process_text_container(self, container, min_length=200) -> Optional[str]:
+    def _process_text_container(self, container, min_length=150) -> Optional[str]:
         """
-        Processador vectorial rigoroso anti-ruído.
-        Isola blocos narrativos puros e aniquila H2H, propagandas e linhas de odds.
+        Processador V6.6.3: Implementação de 'Zona de Imunidade' (Absolute Capture Mode).
+        Garante a extracção ipsis litteris da Previsão da Redacção, evitando a perda da aposta.
         """
         if not container:
             return None
             
-        for elem in container.find_all(["button", "script", "style", "nav", "footer", "aside", "table", "form", "iframe", "a", "img", "ul", "ol"]):
+        # 1. Extermínio Preventivo (Ajustado para não corromper caixas de texto estruturadas)
+        for elem in container.find_all(["button", "script", "style", "nav", "footer", "aside", "table", "form", "iframe", "ul", "ol", "a"]):
             try:
                 elem.decompose()
             except:
@@ -687,45 +685,70 @@ class NBAExtractor:
         
         sections = []
         last_text = ""
+        capture_immunity = False # <-- ESTADO DE CAPTURA ABSOLUTA DESACTIVADO POR DEFEITO
         
+        # Blacklist lexical isenta de termos táticos vitais
         blacklist = {
-            "apostar", "registre", "bônus", "bet", "clique aqui", 
-            "cadastre-se", "promoção", "termos e condições", 
-            "handicap", "lucro", "cashout", "telegram", "whatsapp",
+            "registre", "bônus", "clique aqui", "cadastre-se", "promoção", 
+            "termos e condições", "lucro garantido", "telegram", "whatsapp",
             "1xbit", "bet365", "betano", "1xbet", "pin-up",
-            "últimos jogos", "confrontos diretos", "vitórias", "derrotas",
-            "escala de força", "palpite pago", "vip", "cookie"
+            "palpite pago", "vip", "cookie"
         }
         
-        for elem in container.find_all(["p", "h2", "h3"]):
-            text = elem.get_text(separator=" ", strip=True)
+        # 2. Varredura transversal em profundidade (nós semânticos expandidos)
+        for elem in container.find_all(["p", "h2", "h3", "div", "span"]):
             
-            if not text or len(text) < 45: 
+            # Bloqueio de redundância estrutural
+            if elem.name in ["div", "span"] and elem.find(["p", "h2", "h3", "div"]):
                 continue
-            
-            if text == last_text:
+                
+            text = elem.get_text(separator=" ", strip=True)
+            if not text: 
                 continue
                 
             text_lower = text.lower()
+            is_header = elem.name in ["h2", "h3"]
             
-            if any(b in text_lower for b in blacklist):
+            # GATILHO LIGADO: Zona de Imunidade Activa para captura pura do palpite
+            if is_header and any(trigger in text_lower for trigger in ["previsão da redação", "nossa escolha", "prognóstico", "palpite"]):
+                capture_immunity = True
+                sections.append(f"\n[ALVO TÁCTICO CONFIRMADO] {text}")
+                last_text = text
                 continue
                 
-            num_count = sum(c.isdigit() for c in text)
-            density = num_count / len(text)
-            if density > 0.08: 
+            # GATILHO DESLIGADO: Fim do vector de informação útil (entrada de blocos de ruído estatístico extra)
+            if is_header and any(stop in text_lower for stop in ["odds para o jogo", "posição na tabela", "estatísticas h2h", "últimos jogos", "classificação"]):
+                capture_immunity = False
+                
+            # 3. Aplicação dos Filtros de Purificação (Ignorados durante a Zona de Imunidade)
+            if not capture_immunity and not is_header:
+                if len(text) < 45: 
+                    continue
+                if any(b in text_lower for b in blacklist):
+                    continue
+                num_count = sum(c.isdigit() for c in text)
+                density = num_count / len(text) if len(text) > 0 else 0
+                if density > 0.12: 
+                    continue
+            
+            # Interceptação de redundância
+            if text == last_text or text in sections:
                 continue
                 
-            if re.search(r'\b[1-9]\.\d{2}\b', text) and len(text) < 150:
-                continue
-            
             last_text = text
-            sections.append(text)
+            
+            # Formatação de saída final
+            if is_header and not capture_immunity:
+                sections.append(f"\n[SECTION] {text}")
+            else:
+                sections.append(text)
         
+        # 4. Compilação Matricial
         result = "\n\n".join(sections).strip()
         result = re.sub(r'\n{3,}', '\n\n', result)
         
-        log.info(f"  → Heurística de DOM: {len(sections)} blocos retidos | {len(result)} caracteres totais.")
+        status_imunidade = 'OK' if '[ALVO TÁCTICO CONFIRMADO]' in result else 'FALHA'
+        log.info(f"  → Heurística DOM (V6.6.3): Imunidade={status_imunidade} | {len(sections)} blocos | {len(result)} chars.")
         
         return result if len(result) >= min_length else None
 
@@ -791,7 +814,7 @@ class DatabaseManager:
                 unique.append(g)
         
         if not unique:
-            log.info("Nenhum jogo para persistir")
+            log.info("Nenhum registo persistente válido.")
             return
         
         rows = []
@@ -822,7 +845,7 @@ class DatabaseManager:
                     row[field] = json.dumps(value, ensure_ascii=False, default=str)
             
             if not row.get("tactical_prediction"):
-                log.warning(f"  → {g.slug}: SEM tactical_prediction")
+                log.warning(f"  → {g.slug}: SEM tactical_prediction processada.")
             
             rows.append(row)
         
@@ -831,21 +854,21 @@ class DatabaseManager:
             for r in rows:
                 text_ok = "✓" if r.get("tactical_prediction") else "✗"
                 groq_ok = "✓" if r.get("groq_insight") else "✗"
-                log.info(f"  → Persistido: {r['slug'][:40]} | Texto:{text_ok} | Groq:{groq_ok}")
+                log.info(f"  → Registado: {r['slug'][:40]} | Vector Textual: {text_ok} | Groq:{groq_ok}")
         except Exception as e:
-            log.error(f"Erro ao persistir: {e}")
+            log.error(f"Erro na matriz de persistência de dados: {e}")
             raise
 
 
 # ─── Orquestrador ─────────────────────────────────────────────────────────────
 async def main():
-    log.info("═══ Replicante V6.6.1 (Arquitectura Heurística e DOM Profundo) ═══")
+    log.info("═══ Motor Activo: Kimi/Replicante V6.6.3 (Zona de Imunidade) ═══")
 
     if not Config.SCRAPINGANT_KEY:
-        log.error("SCRAPINGANT_API_KEY ausente")
+        log.error("SCRAPINGANT_API_KEY crítica não fornecida.")
         return
     if not Config.GROQ_API_KEY:
-        log.warning("GROQ_API_KEY ausente - injecção estocástica desactivada")
+        log.warning("GROQ_API_KEY não localizada - injecção da IA suspensa.")
 
     net = NetworkClient()
     ext = NBAExtractor()
@@ -854,14 +877,14 @@ async def main():
     try:
         html_list = await net.fetch(Config.PREDICTIONS_URL, use_browser=False)
         if not html_list:
-            log.error("Falha ao carregar lista matriz")
+            log.error("Excepção não resolvida na captura da lista raiz.")
             return
 
         today = datetime.now(BRT).strftime("%Y-%m-%d")
         games = ext.extract_games_list(html_list, today)
 
         if not games:
-            log.info(f"Sem jogos configurados para {today}")
+            log.info(f"Aguardando novos eventos agendados para {today}.")
             return
 
         cache = db.get_cached()
@@ -872,29 +895,28 @@ async def main():
             needs_update = not cached.get("has_text") or not cached.get("has_groq") or has_empty_text
             
             if not needs_update and cached.get("game_date") == game.game_date:
-                log.info(f"[{game.away_tri} @ {game.home_tri}] → Leitura em Cache Concluída")
+                log.info(f"[{game.away_tri} @ {game.home_tri}] → Ciclo ignorado. Cache preenchido.")
                 return game
 
             pred_url = f"{game.source_url}-prediction"
-            log.info(f"[{game.away_tri} @ {game.home_tri}] → Iniciando extracção")
+            log.info(f"[{game.away_tri} @ {game.home_tri}] → Executando injecção de rede...")
             
             html = await fetch_with_retry(net, pred_url)
             
             if html:
                 ext.extract_full_prediction(html, game)
                 
-                # Execução obrigatória do fallback estrutural de segurança
                 if not game.tactical_prediction:
-                    log.warning(f"[{game.away_tri} @ {game.home_tri}] → Acionando fallback estrutural seguro")
+                    log.warning(f"[{game.away_tri} @ {game.home_tri}] → Activando fallback seguro forçado...")
                     soup = BeautifulSoup(html, "html.parser")
                     fallback_text = ext._extract_text_v3(soup)
                     if fallback_text:
                         game.tactical_prediction = fallback_text
                     else:
-                        log.warning(f"[{game.away_tri} @ {game.home_tri}] → Ausência de vector narrativo. Bloqueio para IA.")
+                        log.warning(f"[{game.away_tri} @ {game.home_tri}] → Vector não passível de reconstrução. Excluído.")
                 
                 has_text = bool(game.tactical_prediction)
-                log.info(f"[{game.away_tri} @ {game.home_tri}] → Vector de Texto:{has_text} ({len(game.tactical_prediction) if game.tactical_prediction else 0} chars)")
+                log.info(f"[{game.away_tri} @ {game.home_tri}] → Leitura vectorizada: {has_text} ({len(game.tactical_prediction) if game.tactical_prediction else 0} bytes)")
 
                 if Config.GROQ_API_KEY and game.tactical_prediction:
                     prompt = game.to_groq_prompt()
@@ -902,9 +924,9 @@ async def main():
                     if insight:
                         game.groq_insight = insight
                 elif not game.tactical_prediction:
-                    log.warning(f"[{game.away_tri} @ {game.home_tri}] → Vector isolado insuficiente para análise Groq!")
+                    log.warning(f"[{game.away_tri} @ {game.home_tri}] → Anulação Groq: Ausência de blocos de contexto tático.")
             else:
-                log.warning(f"[{game.away_tri} @ {game.home_tri}] → Falha de rede: Sem dados HTML")
+                log.warning(f"[{game.away_tri} @ {game.home_tri}] → 404/Timeout no processamento do HTML.")
 
             return game
 
@@ -915,13 +937,13 @@ async def main():
                 results.append(result)
             except Exception as e:
                 results.append(e)
-                log.error(f"[{g.away_tri} @ {g.home_tri}] → Falha crítica operacional: {e}")
+                log.error(f"[{g.away_tri} @ {g.home_tri}] → Falha Sistémica: {e}")
             await asyncio.sleep(3)
 
         valid = []
         for g, r in zip(games, results):
             if isinstance(r, Exception):
-                log.error(f"[{g.away_tri} @ {g.home_tri}] → Erro de Processamento: {r}")
+                log.error(f"[{g.away_tri} @ {g.home_tri}] → Reporte de Falha: {r}")
             else:
                 valid.append(r)
 
@@ -931,7 +953,7 @@ async def main():
         with_text = sum(1 for g in valid if g.tactical_prediction)
         with_groq = sum(1 for g in valid if g.groq_insight)
         
-        log.info(f"═══ Eficiência de Execução: {len(valid)} jogos | Integridade de Texto: {with_text} | Inferências Groq: {with_groq} ═══")
+        log.info(f"═══ Auditoria de Saída: {len(valid)} nodes | Vectores Limpos: {with_text} | Blocos Estocásticos: {with_groq} ═══")
 
     finally:
         await net.close()
