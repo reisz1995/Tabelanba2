@@ -1,9 +1,9 @@
 """
-NBA Scraper - Kimi/Replicante V6.6.3 (Zona de Imunidade e Captura Absoluta)
+NBA Scraper - Kimi/Replicante V6.6.4 (Validação O(1) de Datas e Zona de Imunidade)
 Correcções e Optimizacões:
-  - [UPDATE] Identidade operacional assumida: Kimi.
-  - [FIX] Implementação do Absolute Capture Mode para a Previsão da Redacção.
-  - [FIX] Protecção contra bloqueio numérico de handicaps e odds no texto final.
+  - [UPDATE] Extracção de jogos baseada na assinatura da URL (regex matemático).
+  - [UPDATE] Erradicação de varredura DOM visual ("hoje", "amanhã") para ganho de performance.
+  - [FIX] Preservação integral do Absolute Capture Mode para a Previsão da Redacção.
 """
 
 import os
@@ -24,7 +24,7 @@ from supabase import create_client, Client
 # ─── Logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] [NBA-V6.6.3] %(message)s",
+    format="%(asctime)s [%(levelname)s] [NBA-V6.6.4] %(message)s",
 )
 log = logging.getLogger(__name__)
 
@@ -374,15 +374,18 @@ class NBAExtractor:
             return "20:00", date_str
 
     def extract_games_list(self, html: str, target_date: str) -> List[GameData]:
+        """
+        Extracção Vectorial V6.6.4: Busca determinística dos jogos do dia.
+        Utiliza o filtro matemático da data incorporada na assinatura da URL.
+        """
         soup = BeautifulSoup(html, "html.parser")
         games = []
+        
         pattern = re.compile(r"/pt/basketball/m-(\d{2}-\d{2}-\d{4})-(.+?)(?:-prediction)?$")
         seen_slugs: set[str] = set()
 
         dt_target = datetime.strptime(target_date, "%Y-%m-%d")
-        hoje_visual = dt_target.strftime("%d.%m.%y")
-        meses_pt = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"]
-        hoje_extenso = f"{dt_target.day:02d} {meses_pt[dt_target.month - 1]}"
+        target_signature = dt_target.strftime("%d-%m-%Y")
         
         for a in soup.find_all("a", href=pattern):
             href = a.get("href", "")
@@ -393,25 +396,11 @@ class NBAExtractor:
             if not match:
                 continue
 
-            node_text = a.get_text(separator=" ", strip=True).lower()
-            is_valid_date = False
-            
-            if "hoje" in node_text or hoje_visual in node_text or hoje_extenso in node_text:
-                is_valid_date = True
-            else:
-                regex_data = re.compile(r'\d{2}\.\d{2}\.\d{2}|\d{2} (jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)|hoje|amanhã', re.I)
-                prev_date = a.find_previous(string=regex_data)
-                if prev_date:
-                    prev_text = prev_date.strip().lower()
-                    if "hoje" in prev_text or hoje_visual in prev_text or hoje_extenso in prev_text:
-                        is_valid_date = True
-
-            if not is_valid_date:
-                continue
-
+            url_date = match.group(1)
             teams_slug = match.group(2)
-            time_match = re.search(r"(\d{2}:\d{2})", node_text)
-            t_brt, _ = self.parse_time(time_match.group(1) if time_match else None, target_date)
+            
+            if url_date != target_signature:
+                continue
 
             base_href = href.replace("-prediction", "")
             slug_clean = base_href.replace("/pt/basketball/", "")
@@ -419,6 +408,10 @@ class NBAExtractor:
             if slug_clean in seen_slugs:
                 continue
             seen_slugs.add(slug_clean)
+
+            node_text = a.get_text(separator=" ", strip=True).lower()
+            time_match = re.search(r"(\d{2}:\d{2})", node_text)
+            t_brt, _ = self.parse_time(time_match.group(1) if time_match else None, target_date)
 
             imgs = a.find_all("img")
             alts = [img.get("alt", "").strip() for img in imgs if img.get("alt")]
@@ -448,7 +441,7 @@ class NBAExtractor:
                 confidence_pct=int(conf_match.group(1)) if conf_match else None,
             ))
 
-        log.info(f"Jogos mapeados: {len(games)}")
+        log.info(f"  → Matriz de Busca (V6.6.4): {len(games)} jogos isolados para a assinatura [{target_signature}].")
         return games
 
     def extract_full_prediction(self, html: str, game: GameData) -> None:
@@ -464,7 +457,7 @@ class NBAExtractor:
         game.home_stats, game.away_stats = self._extract_stats(soup, game)
         game.editorial_pick = self._extract_editorial(soup)
         
-        # Fluxo de extracção narrativa principal (Chama a heurística V6.6.3)
+        # Fluxo de extracção narrativa principal (Chama a heurística)
         game.tactical_prediction = self._extract_text_v3(soup)
         
         log.info(f"  → Texto extraído: {len(game.tactical_prediction) if game.tactical_prediction else 0} chars | "
@@ -652,7 +645,7 @@ class NBAExtractor:
             return None
 
     def _extract_text_v3(self, soup: BeautifulSoup) -> Optional[str]:
-        """EXTRACÇÃO REVISADA (V6.6.3): Prioridade para varredura total do DOM e controlo do JSON."""
+        """EXTRACÇÃO REVISADA: Prioridade para varredura total do DOM e controlo do JSON."""
         
         main_content = soup.find("main") or soup.find("body")
         if main_content:
@@ -670,13 +663,12 @@ class NBAExtractor:
 
     def _process_text_container(self, container, min_length=150) -> Optional[str]:
         """
-        Processador V6.6.3: Implementação de 'Zona de Imunidade' (Absolute Capture Mode).
-        Garante a extracção ipsis litteris da Previsão da Redacção, evitando a perda da aposta.
+        Processador com 'Zona de Imunidade' (Absolute Capture Mode).
+        Garante a extracção ipsis litteris da Previsão da Redacção.
         """
         if not container:
             return None
             
-        # 1. Extermínio Preventivo (Ajustado para não corromper caixas de texto estruturadas)
         for elem in container.find_all(["button", "script", "style", "nav", "footer", "aside", "table", "form", "iframe", "ul", "ol", "a"]):
             try:
                 elem.decompose()
@@ -685,9 +677,8 @@ class NBAExtractor:
         
         sections = []
         last_text = ""
-        capture_immunity = False # <-- ESTADO DE CAPTURA ABSOLUTA DESACTIVADO POR DEFEITO
+        capture_immunity = False
         
-        # Blacklist lexical isenta de termos táticos vitais
         blacklist = {
             "registre", "bônus", "clique aqui", "cadastre-se", "promoção", 
             "termos e condições", "lucro garantido", "telegram", "whatsapp",
@@ -695,10 +686,8 @@ class NBAExtractor:
             "palpite pago", "vip", "cookie"
         }
         
-        # 2. Varredura transversal em profundidade (nós semânticos expandidos)
         for elem in container.find_all(["p", "h2", "h3", "div", "span"]):
             
-            # Bloqueio de redundância estrutural
             if elem.name in ["div", "span"] and elem.find(["p", "h2", "h3", "div"]):
                 continue
                 
@@ -709,18 +698,15 @@ class NBAExtractor:
             text_lower = text.lower()
             is_header = elem.name in ["h2", "h3"]
             
-            # GATILHO LIGADO: Zona de Imunidade Activa para captura pura do palpite
             if is_header and any(trigger in text_lower for trigger in ["previsão da redação", "nossa escolha", "prognóstico", "palpite"]):
                 capture_immunity = True
                 sections.append(f"\n[ALVO TÁCTICO CONFIRMADO] {text}")
                 last_text = text
                 continue
                 
-            # GATILHO DESLIGADO: Fim do vector de informação útil (entrada de blocos de ruído estatístico extra)
             if is_header and any(stop in text_lower for stop in ["odds para o jogo", "posição na tabela", "estatísticas h2h", "últimos jogos", "classificação"]):
                 capture_immunity = False
                 
-            # 3. Aplicação dos Filtros de Purificação (Ignorados durante a Zona de Imunidade)
             if not capture_immunity and not is_header:
                 if len(text) < 45: 
                     continue
@@ -731,24 +717,21 @@ class NBAExtractor:
                 if density > 0.12: 
                     continue
             
-            # Interceptação de redundância
             if text == last_text or text in sections:
                 continue
                 
             last_text = text
             
-            # Formatação de saída final
             if is_header and not capture_immunity:
                 sections.append(f"\n[SECTION] {text}")
             else:
                 sections.append(text)
         
-        # 4. Compilação Matricial
         result = "\n\n".join(sections).strip()
         result = re.sub(r'\n{3,}', '\n\n', result)
         
         status_imunidade = 'OK' if '[ALVO TÁCTICO CONFIRMADO]' in result else 'FALHA'
-        log.info(f"  → Heurística DOM (V6.6.3): Imunidade={status_imunidade} | {len(sections)} blocos | {len(result)} chars.")
+        log.info(f"  → Heurística DOM: Imunidade={status_imunidade} | {len(sections)} blocos | {len(result)} chars.")
         
         return result if len(result) >= min_length else None
 
@@ -862,7 +845,7 @@ class DatabaseManager:
 
 # ─── Orquestrador ─────────────────────────────────────────────────────────────
 async def main():
-    log.info("═══ Motor Activo: Kimi/Replicante V6.6.3 (Zona de Imunidade) ═══")
+    log.info("═══ Motor Activo: Kimi/Replicante V6.6.4 (Extracção Regex) ═══")
 
     if not Config.SCRAPINGANT_KEY:
         log.error("SCRAPINGANT_API_KEY crítica não fornecida.")
