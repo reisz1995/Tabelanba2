@@ -378,9 +378,9 @@ class NBAExtractor:
 class DatabaseManager:
     def __init__(self):
         self.sb: Client = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
-        # Mapeamento rigoroso das 16 colunas exactas da tabela SQL simplificada
+        # V7.0.1: Remoção de 'game_time_et'. Sincronização estrita com o esquema SQL minimalista.
         self.target_columns = {
-            "slug", "game_date", "game_time_et", "game_time_brt",
+            "slug", "game_date", "game_time_brt",
             "home_team", "away_team", "home_team_pt", "away_team_pt",
             "home_tri", "away_tri", "source_url", "confidence_pct",
             "game_status", "scraped_at", "tactical_prediction"
