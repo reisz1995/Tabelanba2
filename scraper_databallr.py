@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Módulo Extrator NBA [Databallr -> Supabase -> Google AI Studio]
-Versão: 5.4 (Deep-Search, Key Normalization, Extended Tensors & Full Team Names)
+Versão: 5.5 (Deep-Search, Key Normalization, Extended Tensors, Full Team Names & Season Scope)
 Estética: Replicante / Architect-Engineer
 """
 
@@ -64,14 +64,15 @@ TEAM_NAME_MAP: dict[str, str] = {
 
 class DataballrScraper:
     def __init__(self, season: str = "2025-26"):
-        # [FIXO] Removido suporte a múltiplos períodos
-        self.period = "last14"
-        self.db_period_label = "last_14_days"
-        self.api_date_window = "last_14_days"
+        # [ATUALIZADO] Foco na temporada completa (this_year)
+        self.period = "season"
+        self.db_period_label = "this_year"
+        self.api_date_window = "this_year"
 
         season_env = os.getenv("DATABALLR_SEASON", season)
         self.api_season = "20" + season_env.split('-')[1] if '-' in season_env else "2026"
 
+        # O endpoint agora injetará 'this_year' via self.api_date_window
         self.api_url = (
             f"https://api.databallr.com/api/supabase/team_stats"
             f"?season={self.api_season}&leverage=all&date_window={self.api_date_window}"
@@ -279,4 +280,3 @@ class DataballrScraper:
 
 if __name__ == "__main__":
     DataballrScraper().run()
-                                                    
