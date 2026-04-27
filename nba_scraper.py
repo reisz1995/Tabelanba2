@@ -1,10 +1,9 @@
 """
-NBA Scraper - Kimi/Replicante V7.0.0 (Dissecação HUD e DB Minimalista)
+NBA Scraper - Kimi/Replicante V7.0.3 (Motor de Análise Semântica NLP)
 Correcções e Optimizacões:
-  - [UPDATE] Expurgo total de modelos de IA (Groq/Gemini).
-  - [UPDATE] Extracção de equipas via dissecação de interface (DOM text block) em vez de URL.
-  - [FIX] Mapeamento estrito do DatabaseManager com o esquema SQL relacional simplificado.
-  - [MAINTAIN] Topologia Temporal (Fuso Cruzado ET/BRT) e purificação de vectores textuais.
+  - [UPDATE] Motor Semântico: Lê o texto táctico para descobrir nomes reais em jogos de Playoffs ocultos (Winner of...).
+  - [FIX] Regex visual recalibrada para não destruir equipas com números (ex: 76ers).
+  - [FIX] Mapeamento de SQL persistido na estabilidade V7.0.1.
 """
 
 import os
@@ -24,7 +23,7 @@ from supabase import create_client, Client
 # ─── Logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] [NBA-V7.0.0] %(message)s",
+    format="%(asctime)s [%(levelname)s] [NBA-V7.0.3] %(message)s",
 )
 log = logging.getLogger(__name__)
 
@@ -45,14 +44,13 @@ class Config:
     SCRAPINGANT_KEY  = os.environ.get("SCRAPINGANT_API_KEY", "")
     BASE_URL         = "https://scores24.live"
     PREDICTIONS_URL  = f"{BASE_URL}/pt/basketball/l-usa-nba"
-    CONCURRENCY_LIMIT = 3 # Limite rigoroso para poupar CPU/RAM
+    CONCURRENCY_LIMIT = 3
 
 
 # ─── Modelos ──────────────────────────────────────────────────────────────────
 class GameData(BaseModel):
     slug: str
     game_date: str
-    game_time_et: Optional[str]
     game_time_brt: str
     home_team: str
     away_team: str
@@ -181,10 +179,65 @@ class NBAExtractor:
                 return pt
         return team
 
+    def _resolve_anomalous_teams(self, game: GameData) -> None:
+        """
+        V7.0.3: Análise Semântica NLP. Substitui "Winner of Game X" pelas equipas reais citadas no texto.
+        """
+        if not game.tactical_prediction:
+            return
+            
+        anomalous_triggers = ["winner", "tbd", "game", "vencedor"]
+        home_bad = any(t in game.home_team.lower() for t in anomalous_triggers)
+        away_bad = any(t in game.away_team.lower() for t in anomalous_triggers)
+        
+        if not (home_bad or away_bad):
+            return
+            
+        text_lower = game.tactical_prediction.lower()
+        
+        nba_teams = [
+            "atlanta hawks", "boston celtics", "brooklyn nets", "charlotte hornets",
+            "chicago bulls", "cleveland cavaliers", "dallas mavericks", "denver nuggets",
+            "detroit pistons", "golden state warriors", "houston rockets", "indiana pacers",
+            "la clippers", "los angeles lakers", "la lakers", "memphis grizzlies", "miami heat",
+            "milwaukee bucks", "minnesota timberwolves", "new orleans pelicans",
+            "new york knicks", "ny knicks", "oklahoma city thunder", "orlando magic", "philadelphia 76ers",
+            "phoenix suns", "portland trail blazers", "sacramento kings", "san antonio spurs",
+            "toronto raptors", "utah jazz", "washington wizards"
+        ]
+        
+        found_teams = []
+        for team in nba_teams:
+            if team in text_lower:
+                found_teams.append(team.title())
+                
+        # Deduplicação
+        unique_teams = list(dict.fromkeys(found_teams))
+        
+        if len(unique_teams) >= 2:
+            if home_bad and not away_bad:
+                for t in unique_teams:
+                    if t.lower() not in game.away_team.lower():
+                        game.home_team = t
+                        break
+            elif away_bad and not home_bad:
+                for t in unique_teams:
+                    if t.lower() not in game.home_team.lower():
+                        game.away_team = t
+                        break
+            elif home_bad and away_bad:
+                game.home_team = unique_teams[0]
+                game.away_team = unique_teams[1]
+                
+            # Recalibração pós-substituição
+            game.home_team_pt = self.translate_team(game.home_team)
+            game.away_team_pt = self.translate_team(game.away_team)
+            game.home_tri = self.get_tri_code(game.home_team)
+            game.away_tri = self.get_tri_code(game.away_team)
+            
+            log.info(f"  → Substituição Semântica Aplicada: {game.home_team} vs {game.away_team}")
+
     def extract_games_list(self, html: str, target_date: str) -> List[GameData]:
-        """
-        Extracção Vectorial V7.0.0: Dissecação de Interface e Topologia Temporal.
-        """
         soup = BeautifulSoup(html, "html.parser")
         games = []
         
@@ -252,22 +305,28 @@ class NBAExtractor:
                 home, away = self.clean_team(alts[0]), self.clean_team(alts[1])
             else:
                 raw_fragments = node_text.split("|")
-                valid_names = [
-                    t.strip() for t in raw_fragments 
-                    if not re.search(r'\d|previsão|prognóstico|nossa escolha', t, re.I) and len(t.strip()) > 3
-                ]
+                valid_names = []
+                for t in raw_fragments:
+                    t_clean = t.strip()
+                    # V7.0.3: Tolerância estrita para preservar nomes com números (ex: 76ers)
+                    if re.match(r'^\d{2}:\d{2}$', t_clean) or re.match(r'^\d{1,3}%$', t_clean):
+                        continue
+                    if re.search(r'previsão|prognóstico|nossa escolha', t_clean, flags=re.IGNORECASE):
+                        continue
+                    if len(t_clean) > 2:
+                        valid_names.append(t_clean)
+
                 if len(valid_names) >= 2:
                     home = self.clean_team(valid_names[0]).title()
                     away = self.clean_team(valid_names[1]).title()
                 else:
-                    home, away = "Equipa Casa", "Equipa Visitante"
+                    home, away = "TBD Home", "TBD Away"
 
             conf_match = re.search(r"(\d{1,3})%", node_text_lower)
 
             games.append(GameData(
                 slug=slug_clean,
                 game_date=target_date,
-                game_time_et=time_match.group(1) if time_match else None,
                 game_time_brt=game_brt_time,
                 home_team=home,
                 away_team=away,
@@ -279,7 +338,7 @@ class NBAExtractor:
                 confidence_pct=int(conf_match.group(1)) if conf_match else None,
             ))
 
-        log.info(f"  → Matriz Matemática (V7.0.0): {len(games)} partidas isoladas.")
+        log.info(f"  → Matriz Matemática (V7.0.3): {len(games)} partidas isoladas.")
         return games
 
     def extract_full_prediction(self, html: str, game: GameData) -> None:
@@ -289,6 +348,9 @@ class NBAExtractor:
         soup = BeautifulSoup(html, "html.parser")
         game.tactical_prediction = self._extract_text_v3(soup)
         log.info(f"  → Texto extraído: {len(game.tactical_prediction) if game.tactical_prediction else 0} chars")
+        
+        # Activa o Scanner Semântico para corrigir nomes TBD via leitura de artigo
+        self._resolve_anomalous_teams(game)
 
     def _process_text_container(self, container, min_length=150) -> Optional[str]:
         if not container:
@@ -378,7 +440,6 @@ class NBAExtractor:
 class DatabaseManager:
     def __init__(self):
         self.sb: Client = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
-        # V7.0.1: Remoção de 'game_time_et'. Sincronização estrita com o esquema SQL minimalista.
         self.target_columns = {
             "slug", "game_date", "game_time_brt",
             "home_team", "away_team", "home_team_pt", "away_team_pt",
@@ -431,7 +492,7 @@ class DatabaseManager:
 
 # ─── Orquestrador ─────────────────────────────────────────────────────────────
 async def main():
-    log.info("═══ Motor Activo: Kimi/Replicante V7.0.0 (Base Minimalista) ═══")
+    log.info("═══ Motor Activo: Kimi/Replicante V7.0.3 (Análise Semântica NLP) ═══")
 
     if not Config.SCRAPINGANT_KEY:
         log.error("SCRAPINGANT_API_KEY crítica não fornecida.")
@@ -486,7 +547,6 @@ async def main():
             except Exception as e:
                 results.append(e)
                 log.error(f"[{g.away_tri} @ {g.home_tri}] → Falha Sistémica: {e}")
-            # Estrangulamento forçado para evitar 409 Too Many Requests e pico de RAM
             await asyncio.sleep(4)
 
         valid = []
