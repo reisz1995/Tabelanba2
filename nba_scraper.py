@@ -1,23 +1,24 @@
 """
-NBA Scraper - Replicante V6.6.1 (Correções Críticas + Robustez)
-Correções aplicadas:
-  - [FIX-1] Ordem dos times na lista: Away @ Home (alts[0]=away, alts[1]=home)
-  - [FIX-2] parse_time retorna data ajustada para BRT (jogos pós-meia-noite ET)
-  - [FIX-3] _extract_form usa seletores específicos por time
-  - [FIX-4] _extract_news captura nomes compostos de jogadores
-  - [FIX-5] _extract_stats usa posição relativa no texto, não find()
-  - [FIX-6] _extract_h2h com deduplicação de matches
-  - [FIX-7] Junk filter contextual (ratio-based, não keyword absoluto)
-  - [FIX-8] _process_editorial_container não pula divs pais indevidamente
-  - [FIX-9] Processamento paralelo real com asyncio.gather + semaphore
-  - [FIX-10] Hornets code atualizado para CHO (oficial NBA)
-  - [FIX-11] Editorial confidence mais granular
-  - [FIX-12] Delay adaptativo com jitter e respeito a Retry-After
-  - [FIX-13] Groq prompt com limitação de tokens do editorial_hint
-  - [FIX-14] Regex do slug mais robusto para query params
-  - [FIX-15] _extract_editorial_text preserva containers div com contexto
-  - [FIX-16] Database upsert loga slugs rejeitados
-  - [FIX-17] Quality score nunca negativo, calculado de forma acumulativa
+NBA Scraper - Replicante V6.6.2 (FIX: Isolamento da Previsão da Redação)
+Correções:
+  - [FIX-CRITICAL] Estratégia 1 isola APENAS o texto entre "Previsão da Redação" 
+    e o próximo separador (NOSSA ESCOLHA, votação, etc). Não pega o container pai.
+  - [FIX-1] Ordem dos times: alts[0]=away, alts[1]=home
+  - [FIX-2] parse_time retorna data ajustada para BRT
+  - [FIX-3] _extract_form com seletores específicos por time
+  - [FIX-4] _extract_news captura nomes compostos
+  - [FIX-5] _extract_stats com posição relativa
+  - [FIX-6] H2H com deduplicação
+  - [FIX-7] Junk filter contextual
+  - [FIX-8] Não pula divs pais indevidamente
+  - [FIX-9] Processamento paralelo real
+  - [FIX-10] Hornets = CHO
+  - [FIX-11] Confidence mais granular
+  - [FIX-12] Delay adaptativo com jitter
+  - [FIX-13] Groq prompt limitado
+  - [FIX-14] Regex slug robusto
+  - [FIX-16] Log de rejeitados
+  - [FIX-17] Quality score não negativo
 """
 
 import os
@@ -39,7 +40,7 @@ from supabase import create_client, Client
 # ─── Logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] [NBA-V6.6.1] %(message)s",
+    format="%(asctime)s [%(levelname)s] [NBA-V6.6.2] %(message)s",
 )
 log = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ class Config:
     BASE_URL         = "https://scores24.live"
     PREDICTIONS_URL  = f"{BASE_URL}/pt/basketball/l-usa-nba/predictions"
     CONCURRENCY_LIMIT = 5
-    MAX_GROQ_TOKENS   = 3500  # [FIX-13] Limite de segurança para prompt
+    MAX_GROQ_TOKENS   = 3500
 
 
 # ─── Modelos ──────────────────────────────────────────────────────────────────
@@ -150,7 +151,7 @@ class GroqInsight(BaseModel):
 class GameData(BaseModel):
     slug: str
     game_date: str
-    game_date_brt: str  # [FIX-2] Nova campo: data ajustada para BRT
+    game_date_brt: str
     game_time_et: Optional[str]
     game_time_brt: str
     home_team: str
@@ -181,7 +182,6 @@ class GameData(BaseModel):
     text_quality_score: Optional[float] = None
 
     def to_groq_prompt(self) -> str:
-        """Gera prompt para Groq com limitação de tokens."""
         def implied_prob(odds: float) -> float:
             return 100 / odds if odds > 0 else 0
 
@@ -194,14 +194,12 @@ class GameData(BaseModel):
         home_form_str = f"{self.home_form.wins_last_10}/10" if self.home_form and self.home_form.wins_last_10 else "N/A"
         away_form_str = f"{self.away_form.wins_last_10}/10" if self.away_form and self.away_form.wins_last_10 else "N/A"
 
-        # [FIX-13] Limita editorial_hint para não estourar tokens
         editorial_hint = ""
         if self.editorial_pick:
             expl = (self.editorial_pick.explanation or "N/A")[:200]
-            editorial_hint = f"""\n## ESCOLHA DA REDAÇÃO\n- Recomendação: {self.editorial_pick.recommendation}\n- Handicap: {self.editorial_pick.handicap_line or 'N/A'}\n- Odds: {self.editorial_pick.odds or 'N/A'}\n- Confiança: {self.editorial_pick.confidence_level or 'N/A'}\n- Explicação: {expl}"""
+            editorial_hint = f"""\n## ESCOLHA DA REDAÇÃO\n- Recomendação: {self.editorial_pick.recommendation}\n- Handicap: {self.editorial_pick.handicap_line or \'N/A\'}\n- Odds: {self.editorial_pick.odds or \'N/A\'}\n- Confiança: {self.editorial_pick.confidence_level or \'N/A\'}\n- Explicação: {expl}"""
 
-        # [FIX-13] Limita tactical_prediction para deixar espaço para resposta
-        max_analysis = min(2000, Config.MAX_GROQ_TOKENS * 3)  # ~3 chars/token estimativa
+        max_analysis = min(2000, Config.MAX_GROQ_TOKENS * 3)
         analysis = (self.tactical_prediction or "N/A")[:max_analysis]
 
         return f"""Você é o Estatístico Chefe de NBA. Analise este jogo.
@@ -210,11 +208,11 @@ class GameData(BaseModel):
 {self.away_team} @ {self.home_team} | {self.game_date}
 
 ## MERCADO
-- V1: {self.odds.v1 if self.odds else 'N/A'} ({home_implied:.1f}%)
-- V2: {self.odds.v2 if self.odds else 'N/A'} ({away_implied:.1f}%)
+- V1: {self.odds.v1 if self.odds else \'N/A\'} ({home_implied:.1f}%)
+- V2: {self.odds.v2 if self.odds else \'N/A\'} ({away_implied:.1f}%)
 
 ## CONTEXTO
-H2H: {self.h2h.total_matches if self.h2h else 'N/A'} jogos
+H2H: {self.h2h.total_matches if self.h2h else \'N/A\'} jogos
 Forma: Casa {home_form_str} vs Visitante {away_form_str}
 Lesões Casa: {home_injuries}
 Lesões Visitante: {away_injuries}{editorial_hint}
@@ -257,7 +255,6 @@ class NetworkClient:
                         await asyncio.sleep(wait)
                         continue
 
-                    # [FIX-12] Respeita Retry-After header
                     if resp.status_code == 429 and attempt < retries:
                         retry_after = int(resp.headers.get("Retry-After", 5))
                         log.warning(f"429 retry em {retry_after}s...")
@@ -334,19 +331,14 @@ class NetworkClient:
 
 # ─── Fetch com retry adaptativo ───────────────────────────────────────────────
 async def fetch_with_retry(net, url: str) -> Optional[str]:
-    """Retry robusto + alternância de browser + delay adaptativo com jitter"""
-
     log.info(f"[FETCH] {url[-60:]}")
 
-    # 1️⃣ tentativa (browser=True)
     html = await net.fetch(url, use_browser=True)
     if html:
         return html
 
-    # [FIX-12] Delay com jitter para evitar padrão detectável
     await asyncio.sleep(1.5 + random.uniform(0, 0.5))
 
-    # 2️⃣ tentativa (browser=False)
     log.warning(f"[RETRY] browser=False → {url[-40:]}")
     html = await net.fetch(url, use_browser=False)
     if html:
@@ -354,7 +346,6 @@ async def fetch_with_retry(net, url: str) -> Optional[str]:
 
     await asyncio.sleep(2.5 + random.uniform(0, 1.0))
 
-    # 3️⃣ tentativa final (browser=True)
     log.warning(f"[RETRY FINAL] browser=True → {url[-40:]}")
     html = await net.fetch(url, use_browser=True)
 
@@ -367,7 +358,6 @@ async def fetch_with_retry(net, url: str) -> Optional[str]:
 # ─── Extração ─────────────────────────────────────────────────────────────────
 class NBAExtractor:
 
-    # [FIX-7] Junk keywords separados por severidade para filtro contextual
     JUNK_KEYWORDS_HARD = [
         "registre", "bônus", "cadastre-se", "promoção", "termos e condições",
         "ganhe até", "cashback", "freebet", "depósito", "regulamento",
@@ -375,7 +365,7 @@ class NBAExtractor:
         "compartilhe", "menu", "início", "cookies", "privacidade",
         "política de uso", "lgpd", "copyright", "todos os direitos", "©", "®", "™",
     ]
-    
+
     JUNK_KEYWORDS_SOFT = [
         "apostar", "bet", "clique aqui", "odds", "resultados ao vivo", 
         "ao vivo", "live", "streaming", "veja também", "leia mais",
@@ -425,12 +415,10 @@ class NBAExtractor:
         return team
 
     def parse_time(self, time_str: Optional[str], date_str: str) -> tuple[str, str]:
-        """[FIX-2] Retorna (hora_brt, data_brt) ajustados para timezone."""
         if not time_str:
             return "20:00", date_str
         try:
             h, m = map(int, time_str.split(":"))
-            # ET para BRT: -3 horas
             h_brt = h - 3
             dt = datetime.strptime(date_str, "%Y-%m-%d")
             if h_brt < 0:
@@ -441,15 +429,13 @@ class NBAExtractor:
             return "20:00", date_str
 
     def extract_games_list(self, html: str, target_date: str) -> List[GameData]:
-        """[FIX-1] Extração com ordem correta: alts[0]=away, alts[1]=home"""
         soup = BeautifulSoup(html, "html.parser")
         games = []
-        # [FIX-14] Regex mais robusto: ignora query params e hash no final
         pattern = re.compile(r"/pt/basketball/m-(\d{2}-\d{2}-\d{4})-(.+?)(?:-prediction)?(?:[?#]|$)")
         seen_slugs: set[str] = set()
 
         for a in soup.find_all("a", href=pattern):
-            href = a.get("href", "").split("?")[0].split("#")[0]  # [FIX-14] Limpa query/hash
+            href = a.get("href", "").split("?")[0].split("#")[0]
             if not href:
                 continue
 
@@ -457,7 +443,7 @@ class NBAExtractor:
             if not match:
                 continue
 
-            slug_date_raw = match.group(1)  # DD-MM-YYYY
+            slug_date_raw = match.group(1)
             try:
                 slug_dt = datetime.strptime(slug_date_raw, "%d-%m-%Y")
                 slug_date = slug_dt.strftime("%Y-%m-%d")
@@ -470,8 +456,7 @@ class NBAExtractor:
             teams_slug = match.group(2)
             node_text = a.get_text(separator=" ", strip=True).lower()
             time_match = re.search(r"(\d{2}:\d{2})", node_text)
-            
-            # [FIX-2] Usa data retornada por parse_time
+
             t_brt, date_brt = self.parse_time(time_match.group(1) if time_match else None, target_date)
 
             base_href = href.replace("-prediction", "")
@@ -483,19 +468,14 @@ class NBAExtractor:
 
             imgs = a.find_all("img")
             alts = [img.get("alt", "").strip() for img in imgs if img.get("alt")]
-            
-            # [FIX-1] Ordem correta: na lista scores24, geralmente away primeiro, home segundo
-            # Mas verificamos pelo texto do link para confirmar
+
             if len(alts) >= 2:
-                # Verifica se o texto do link sugere @ (away @ home)
                 if "@" in node_text or "vs" in node_text:
-                    # Tenta inferir: time antes do @/vs = away, depois = home
                     if "@" in node_text:
                         parts = node_text.split("@")
                         if len(parts) == 2:
                             away_text = parts[0].strip()
                             home_text = parts[1].strip()
-                            # Match com alts
                             away = self.clean_team(alts[0]) if alts[0].lower() in away_text else self.clean_team(alts[1])
                             home = self.clean_team(alts[1]) if alts[1].lower() in home_text else self.clean_team(alts[0])
                         else:
@@ -516,7 +496,7 @@ class NBAExtractor:
             games.append(GameData(
                 slug=slug_clean,
                 game_date=target_date,
-                game_date_brt=date_brt,  # [FIX-2] Data BRT ajustada
+                game_date_brt=date_brt,
                 game_time_et=time_match.group(1) if time_match else None,
                 game_time_brt=t_brt,
                 home_team=home,
@@ -533,7 +513,6 @@ class NBAExtractor:
         return games
 
     def extract_full_prediction(self, html: str, game: GameData) -> None:
-        """Extrai todos os dados da página de previsão."""
         if not html:
             return
 
@@ -567,7 +546,6 @@ class NBAExtractor:
             return None
 
     def _extract_h2h(self, soup: BeautifulSoup) -> Optional[H2HData]:
-        """[FIX-6] H2H com deduplicação de matches."""
         try:
             h2h = H2HData()
             section = soup.find(string=re.compile(r"Confrontos diretos|Estatísticas H2H", re.I))
@@ -586,9 +564,8 @@ class NBAExtractor:
                 h2h.home_wins, h2h.away_wins = int(wins[0]), int(wins[1])
                 h2h.total_matches = h2h.home_wins + h2h.away_wins
 
-            # [FIX-6] Deduplicação
             seen_matches: set[str] = set()
-            
+
             for row in container.find_all("tr")[:5]:
                 cells = row.find_all(["td", "th"])
                 if len(cells) >= 4:
@@ -598,7 +575,7 @@ class NBAExtractor:
                         if match_key in seen_matches:
                             continue
                         seen_matches.add(match_key)
-                        
+
                         h2h.recent_matches.append(H2HMatch(
                             date=cells[0].get_text(strip=True),
                             home_team=cells[1].get_text(strip=True),
@@ -611,34 +588,28 @@ class NBAExtractor:
             return None
 
     def _extract_form(self, soup: BeautifulSoup, game: GameData) -> tuple:
-        """[FIX-3] Forma com seletores específicos por time."""
         home_form = TeamForm(team_name=game.home_team)
         away_form = TeamForm(team_name=game.away_team)
 
         try:
-            # Procura seções que mencionem explicitamente os times
             for section in soup.find_all(string=re.compile(r"Resultados dos jogos|Últimos jogos|Forma", re.I)):
                 container = section.find_parent(["div", "section"])
                 if not container:
                     continue
-                
-                # [FIX-3] Tenta encontrar sub-seções para cada time
+
                 container_text = container.get_text()
-                
-                # Divide o container em partes baseado nos nomes dos times
                 home_key = game.home_team.split()[-1]
                 away_key = game.away_team.split()[-1]
-                
-                # Procura por headers ou divs que contenham o nome do time
+
                 team_sections = container.find_all(["h3", "h4", "div", "p"], 
                     string=re.compile(f"{home_key}|{away_key}", re.I))
-                
+
                 if team_sections:
                     for ts in team_sections:
                         ts_text = ts.get_text()
                         target = home_form if home_key in ts_text and away_key not in ts_text else \
                                  away_form if away_key in ts_text and home_key not in ts_text else None
-                        
+
                         if target:
                             win_match = re.search(r'(\d+)\s*vitórias?\s*nos\s*últimos\s*dez', ts_text, re.I)
                             if win_match:
@@ -647,8 +618,6 @@ class NBAExtractor:
                             if pos_match:
                                 target.position_conference = pos_match.group(1) + "º"
                 else:
-                    # Fallback: análise posicional no texto completo
-                    # Assume que home vem primeiro no container
                     text = container_text
                     win_match = re.search(r'(\d+)\s*vitórias?\s*nos\s*últimos\s*dez', text, re.I)
                     if win_match:
@@ -662,7 +631,6 @@ class NBAExtractor:
             return home_form, away_form
 
     def _extract_news(self, soup: BeautifulSoup, game: GameData) -> tuple:
-        """[FIX-4] News com captura de nomes compostos."""
         home_news = TeamNews()
         away_news = TeamNews()
 
@@ -676,44 +644,37 @@ class NBAExtractor:
                 return home_news, away_news
 
             text = container.get_text()
-            
-            # [FIX-4] Padrões melhorados para nomes compostos
+
             patterns = [
-                # Nome composto + está + status
                 r'([A-Z][a-zA-Z\s\.]+?)\s+está\s+(fora|duvida|dúvida|provável|questionável)',
-                # participação de + nome + status
                 r'participação\s+de\s+([A-Z][a-zA-Z\s\.]+?)\s+([\w\s]+?)(?:\.|;|$)',
-                # Nome + status direto
                 r'([A-Z][a-zA-Z\s\.]{2,30}?)\s*[-–—]\s*(fora|duvida|dúvida|provável|questionável)',
             ]
-            
+
             for pattern in patterns:
                 for match in re.finditer(pattern, text):
                     player = match.group(1).strip()
                     status_raw = match.group(2).lower()
-                    
-                    # Limpa nome (remove títulos, etc)
+
                     player = re.sub(r'^(o |a |os |as )\s*', '', player, flags=re.I).strip()
                     if len(player) < 3 or len(player) > 30:
                         continue
-                    
+
                     status = "fora" if "fora" in status_raw else \
                              "dúvida" if any(x in status_raw for x in ["duvida", "dúvida", "questionável"]) else \
                              "provável"
-                    
+
                     injury = Injury(player=player, status=status)
-                    
-                    # [FIX-4] Determina time por contexto: procura menção ao time antes do nome
+
                     text_before = text[:text.find(player)]
                     home_mentions = text_before.lower().count(game.home_team.split()[-1].lower())
                     away_mentions = text_before.lower().count(game.away_team.split()[-1].lower())
-                    
+
                     if home_mentions > away_mentions:
                         home_news.injuries.append(injury)
                     elif away_mentions > home_mentions:
                         away_news.injuries.append(injury)
                     else:
-                        # Empate: joga no time que tem menos lesões (distribui)
                         if len(home_news.injuries) <= len(away_news.injuries):
                             home_news.injuries.append(injury)
                         else:
@@ -724,7 +685,6 @@ class NBAExtractor:
             return home_news, away_news
 
     def _extract_stats(self, soup: BeautifulSoup, game: GameData) -> tuple:
-        """[FIX-5] Stats com atribuição por posição relativa no texto."""
         home_stats = TeamStats()
         away_stats = TeamStats()
 
@@ -733,19 +693,16 @@ class NBAExtractor:
             if section and section.find_parent(["div", "section"]):
                 container = section.find_parent(["div", "section"])
                 text = container.get_text()
-                
-                # [FIX-5] Encontra todos os scorers com posição
+
                 scorers = []
                 for match in re.finditer(r'([A-Z][a-zA-Z\s\.]+?)[^,]*?(\d+\.\d+)\s*pontos?', text):
                     player = match.group(1).strip()
                     ppg = float(match.group(2))
                     pos = match.start()
                     scorers.append((pos, player, ppg))
-                
-                # Divide o texto em duas metades: primeira metade = home, segunda = away
-                # (assumindo layout padrão: home em cima, away em baixo)
+
                 mid_point = len(text) // 2
-                
+
                 for pos, player, ppg in scorers:
                     scorer = TopScorer(player=player, ppg=ppg)
                     if pos < mid_point:
@@ -767,7 +724,6 @@ class NBAExtractor:
             return home_stats, away_stats
 
     def _extract_editorial(self, soup: BeautifulSoup) -> Optional[EditorialPick]:
-        """[FIX-11] Editorial com confidence mais granular."""
         try:
             section = soup.find(string=re.compile(r"Previsão da Redação|NOSSA ESCOLHA|Escolha do Editor", re.I))
             if not section:
@@ -781,7 +737,6 @@ class NBAExtractor:
             text_lower = text.lower()
             pick = EditorialPick(recommendation="")
 
-            # Determina recomendação
             if "vitória dos visitantes" in text_lower or "vitória do visitante" in text_lower:
                 pick.recommendation = "vitoria_visitante"
                 pick.market_type = "moneyline"
@@ -811,7 +766,6 @@ class NBAExtractor:
                     pick.recommendation = "analise_neutra"
                     pick.market_type = "analysis"
 
-            # Handicap line
             handicap = re.search(r'([\+-]?\d+\.?\d*)\s*(?:handicap|spread|linha)', text_lower)
             if not handicap:
                 handicap = re.search(r'handicap\s*([\+-]?\d+\.?\d*)', text_lower)
@@ -820,17 +774,15 @@ class NBAExtractor:
             if handicap:
                 pick.handicap_line = handicap.group(1)
 
-            # Odds
             odds = re.search(r'(\d+\.\d+)\*?', text)
             if odds:
                 pick.odds = float(odds.group(1))
 
-            # [FIX-11] Confidence mais granular
             high_signals = ["muito confiante", "forte", "ótima", "excelente", "convicção", "certeza"]
             medium_signals = ["moderado", "razoável", "interessante", "pode valer", "oportunidade"]
             low_signals = ["arriscado", "cuidado", "incerto", "evitar", "foge", "perigoso", "instável"]
             avoid_signals = ["não apostar", "ficar de fora", "pass", "evitar", "sem valor"]
-            
+
             if any(w in text_lower for w in avoid_signals):
                 pick.confidence_level = "evitar"
             elif any(w in text_lower for w in high_signals):
@@ -840,10 +792,8 @@ class NBAExtractor:
             elif any(w in text_lower for w in medium_signals):
                 pick.confidence_level = "média"
             else:
-                # Default baseado no tipo de recomendação
                 pick.confidence_level = "média"
 
-            # Explicação
             paragraphs = container.find_all("p")
             for p in paragraphs:
                 p_text = p.get_text(strip=True)
@@ -861,33 +811,70 @@ class NBAExtractor:
             log.warning(f"Erro extraindo editorial: {e}")
             return None
 
+    # ═══════════════════════════════════════════════════════════════════════════
+    # [FIX-CRITICAL] Extrai APENAS o texto da "Previsão da Redação"
+    # ═══════════════════════════════════════════════════════════════════════════
     def _extract_editorial_text(self, soup: BeautifulSoup, game: GameData) -> tuple[Optional[str], Optional[str]]:
         """
-        Extrai o texto da "Previsão da Redação".
+        Extrai APENAS o texto da "Previsão da Redação" — o conteúdo entre o header
+        e o próximo elemento significativo (NOSSA ESCOLHA, votação, etc).
         Retorna (texto, método_usado).
         """
 
-        # ESTRATÉGIA 1: Header exato "Previsão da Redação"
-        header = soup.find(string=re.compile(r"^\s*Previsão da Redação\s*$", re.I))
-        if not header:
-            header = soup.find(string=re.compile(r"Previsão da Redação", re.I))
+        # ESTRATÉGIA 1: Header "Previsão da Redação" → extrai APENAS o conteúdo 
+        # entre ele e o próximo header/separador significativo
+        header = soup.find(string=re.compile(r"Previsão da Redação", re.I))
 
         if header:
-            for container_tag in ["article", "section", "div"]:
-                container = header.find_parent(container_tag)
-                if container:
-                    text = self._process_editorial_container(container, game)
-                    if text and len(text) >= 300:
-                        log.info(f"  → [ESTRATÉGIA 1] Previsão da Redação via {container_tag}")
-                        return text, f"editorial_{container_tag}"
+            header_elem = header.find_parent(["h2", "h3", "h4", "div", "section"])
+            if not header_elem:
+                header_elem = header.parent
 
-            parent = header.find_parent(["h2", "h3", "h4", "div"])
-            if parent:
-                for sibling in parent.find_next_siblings(["div", "section", "article", "p"]):
-                    text = self._process_editorial_container(sibling, game)
-                    if text and len(text) >= 300:
-                        log.info(f"  → [ESTRATÉGIA 1b] Previsão da Redação via sibling")
-                        return text, "editorial_sibling"
+            if header_elem:
+                editorial_content = []
+                current = header_elem.find_next_sibling()
+
+                stop_selectors = [
+                    re.compile(r"NOSSA ESCOLHA", re.I),
+                    re.compile(r"Esta previsão vai ser correta", re.I),
+                    re.compile(r"Bônus de jogos", re.I),
+                    re.compile(r"Previsões estatísticas", re.I),
+                    re.compile(r"^\s*APOSTAR\s*$", re.I),
+                ]
+
+                while current:
+                    current_text = current.get_text(strip=True)
+                    is_stop = False
+
+                    if current.name in ["div", "section"]:
+                        if any(pattern.search(current_text) for pattern in stop_selectors):
+                            is_stop = True
+                        classes = " ".join(current.get("class", [])).lower()
+                        if any(x in classes for x in ["bet", "odds", "bonus", "vote", "poll"]):
+                            is_stop = True
+
+                    if current.name in ["h2", "h3", "h4"]:
+                        header_text = current_text.lower()
+                        if any(pattern.search(header_text) for pattern in stop_selectors):
+                            is_stop = True
+                        if len(current_text) > 0 and current_text != header.get_text(strip=True):
+                            is_stop = True
+
+                    if is_stop:
+                        break
+
+                    if current.name in ["p", "div", "section", "article", "span"]:
+                        text = self._process_single_element(current, game)
+                        if text:
+                            editorial_content.append(text)
+
+                    current = current.find_next_sibling()
+
+                if editorial_content:
+                    result = "\n\n".join(editorial_content).strip()
+                    if len(result) >= 100:
+                        log.info(f"  → [ESTRATÉGIA 1] Previsão da Redação isolada: {len(result)} chars")
+                        return result, "editorial_isolated"
 
         # ESTRATÉGIA 2: Containers por classe
         for cls in ["prediction-content", "match-preview", "analysis-content", 
@@ -931,32 +918,55 @@ class NBAExtractor:
         log.warning(f"  → [FALHA] Nenhuma estratégia encontrou texto de qualidade")
         return None, None
 
+    def _process_single_element(self, elem, game: GameData) -> Optional[str]:
+        """Processa um único elemento HTML extraindo texto limpo."""
+        if not elem:
+            return None
+
+        elem_copy = BeautifulSoup(str(elem), "html.parser").find()
+        for junk in elem_copy.find_all(["button", "script", "style", "nav", "svg"]):
+            junk.decompose()
+
+        text = elem_copy.get_text(strip=True)
+
+        if not text or len(text) < 20:
+            return None
+        if self._is_junk_text(text):
+            return None
+
+        basketball_terms = ["pontos", "cesta", "rebote", "assistência", "defesa", 
+                           "ataque", "jogador", "quarto", "tempo", "vitória", "derrota",
+                           "arremesso", "cesta", "jogo", "partida", "confronto"]
+        has_basketball = any(term in text.lower() for term in basketball_terms)
+        has_team = (game.home_team.split()[-1].lower() in text.lower() or 
+                   game.away_team.split()[-1].lower() in text.lower())
+
+        if not has_basketball and not has_team and len(text) < 100:
+            return None
+
+        return text
+
     def _process_editorial_container(self, container, game: GameData) -> Optional[str]:
-        """[FIX-8] Processa container extraindo texto limpo e validado."""
         if not container:
             return None
 
         container_copy = BeautifulSoup(str(container), "html.parser").find()
 
-        # Remove elementos de lixo
         for elem in container_copy.find_all([
             "button", "script", "style", "nav", "footer", "aside", 
             "header", "form", "iframe", "noscript", "svg", "canvas"
         ]):
             elem.decompose()
 
-        # Remove divs que parecem ser widgets de odds/apostas (pequenos)
         for div in container_copy.find_all("div"):
             div_text = div.get_text(strip=True).lower()
             if any(kw in div_text for kw in ["apostar agora", "bet", "bônus", "cadastre", "odds"]):
-                if len(div_text) < 150:  # Só remove se for pequeno
+                if len(div_text) < 150:
                     div.decompose()
 
         sections = []
         last_text = ""
 
-        # [FIX-8] Não pula divs pais indiscriminadamente
-        # Processa todos os elementos semânticos, incluindo divs que são folhas
         for elem in container_copy.find_all([
             "h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "blockquote"
         ]):
@@ -972,7 +982,7 @@ class NBAExtractor:
             last_text = text
 
             if elem.name in ["h1", "h2", "h3", "h4", "h5", "h6"]:
-                sections.append(f"\n{text}\n{'=' * min(len(text), 40)}")
+                sections.append(f"\n{text}\n{"," * min(len(text), 40)}")
             elif elem.name == "li":
                 sections.append(f"  • {text}")
             elif elem.name == "blockquote":
@@ -980,9 +990,7 @@ class NBAExtractor:
             else:
                 sections.append(text)
 
-        # [FIX-8] Também processa divs folha (sem filhos semânticos) como fallback
         for div in container_copy.find_all("div"):
-            # Só processa se não tiver filhos semânticos (é folha)
             if not div.find_all(["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "blockquote"]):
                 text = div.get_text(strip=True)
                 if text and len(text) >= 40 and text != last_text and not self._is_junk_text(text):
@@ -990,7 +998,7 @@ class NBAExtractor:
                     last_text = text
 
         result = "\n\n".join(sections).strip()
-        result = re.sub(r'\n{3,}', '\n\n', result)
+        result = re.sub(r'\n{3,}', \'\n\n', result)
 
         if len(result) < 200:
             return None
@@ -1008,39 +1016,31 @@ class NBAExtractor:
         return result
 
     def _is_junk_text(self, text: str) -> bool:
-        """[FIX-7] Filtro contextual de lixo (ratio-based)."""
         text_lower = text.lower()
         text_len = len(text)
 
-        # Hard keywords: sempre lixo (curtos, óbvios)
         if any(kw in text_lower for kw in self.JUNK_KEYWORDS_HARD):
-            # Mas se o texto for longo (>200) e só tiver 1 keyword hard, pode ser legítimo
             hard_count = sum(1 for kw in self.JUNK_KEYWORDS_HARD if kw in text_lower)
             if text_len > 200 and hard_count <= 1:
-                pass  # Pode ser legítimo, continua avaliação
+                pass
             else:
                 return True
 
-        # Soft keywords: só é lixo se a densidade for alta (>30% do texto)
         soft_count = sum(1 for kw in self.JUNK_KEYWORDS_SOFT if kw in text_lower)
         if soft_count > 0:
-            # Calcula "densidade de junk": caracteres em keywords / total
             junk_chars = sum(len(kw) for kw in self.JUNK_KEYWORDS_SOFT if kw in text_lower)
             if junk_chars / text_len > 0.3:
                 return True
 
-        # Se é só números e pontos (probavelmente odds)
         if re.match(r'^[\d\.\s\-\+\*]+$', text.strip()):
             return True
 
-        # Se é muito curto e tem padrão de odds
         if text_len < 50 and re.search(r'\d+\.\d+', text):
             return True
 
         return False
 
     def _clean_text(self, text: str) -> str:
-        """Limpa texto de lixo."""
         lines = text.split("\n")
         clean_lines = []
         for line in lines:
@@ -1053,14 +1053,12 @@ class NBAExtractor:
         return "\n".join(clean_lines)
 
     def _calculate_text_quality(self, text: Optional[str]) -> float:
-        """[FIX-17] Score de qualidade nunca negativo, calculado de forma acumulativa."""
         if not text:
             return 0.0
 
         score = 0.0
         length = len(text)
 
-        # Tamanho
         if length >= 2000:
             score += 0.3
         elif length >= 1000:
@@ -1070,37 +1068,32 @@ class NBAExtractor:
         elif length >= 200:
             score += 0.1
         else:
-            return 0.0  # Muito curto = qualidade 0
+            return 0.0
 
-        # Estrutura
         if "===" in text or "---" in text:
             score += 0.15
         if "•" in text:
             score += 0.1
-        if ">" in text:  # blockquote
+        if ">" in text:
             score += 0.05
 
-        # Termos analíticos
         analytical_terms = ["porque", "devido", "estatística", "média", "percentual",
                          "tendência", "fator", "vantagem", "desvantagem", "probabilidade",
                          "análise", "dado", "comparativo", "histórico"]
         analytical_count = sum(1 for term in analytical_terms if term in text.lower())
         score += min(analytical_count * 0.03, 0.15)
 
-        # Dados numéricos
         if re.search(r'\d+\.\d+', text):
             score += 0.05
 
-        # [FIX-17] Penalidade por lixo (limitada)
         junk_count = sum(1 for kw in self.JUNK_KEYWORDS_HARD if kw in text.lower())
         junk_count += sum(1 for kw in self.JUNK_KEYWORDS_SOFT if kw in text.lower())
-        penalty = min(junk_count * 0.03, 0.2)  # Penalidade mais suave e limitada
+        penalty = min(junk_count * 0.03, 0.2)
         score -= penalty
 
         return max(0.0, min(1.0, score))
 
     def _extract_json_ld(self, soup: BeautifulSoup) -> Optional[str]:
-        """Extrai texto de JSON-LD (structured data)."""
         try:
             for script in soup.find_all("script", type="application/ld+json"):
                 try:
@@ -1133,7 +1126,6 @@ class DatabaseManager:
         self._known_columns: Optional[Set[str]] = None
 
     def _get_table_columns(self) -> Set[str]:
-        """Descobre colunas existentes na tabela."""
         if self._known_columns is not None:
             return self._known_columns
 
@@ -1164,7 +1156,6 @@ class DatabaseManager:
             }
 
     def get_cached(self) -> Dict[str, dict]:
-        """Verifica cache."""
         columns = self._get_table_columns()
         select_cols = ["slug", "game_date"]
 
@@ -1188,7 +1179,6 @@ class DatabaseManager:
         }
 
     def upsert_games(self, games: List[GameData]):
-        """[FIX-16] Persiste apenas jogos com texto de qualidade, loga rejeitados."""
         columns = self._get_table_columns()
 
         seen = set()
@@ -1204,13 +1194,13 @@ class DatabaseManager:
 
         rows = []
         skipped = 0
-        rejected_slugs: list[str] = []  # [FIX-16]
+        rejected_slugs: list[str] = []
 
         for g in unique:
             if not g.tactical_prediction or g.text_quality_score < 0.15:
                 log.warning(f"  → {g.slug}: REJEITADO (texto={bool(g.tactical_prediction)}, qualidade={g.text_quality_score:.2f})")
                 skipped += 1
-                rejected_slugs.append(g.slug)  # [FIX-16]
+                rejected_slugs.append(g.slug)
                 continue
 
             row: Dict[str, Any] = {}
@@ -1248,7 +1238,7 @@ class DatabaseManager:
             rows.append(row)
 
         if not rows:
-            log.warning(f"Nenhum jogo passou no quality gate. {skipped} rejeitados: {rejected_slugs[:5]}")  # [FIX-16]
+            log.warning(f"Nenhum jogo passou no quality gate. {skipped} rejeitados: {rejected_slugs[:5]}")
             return
 
         try:
@@ -1269,7 +1259,7 @@ class DatabaseManager:
 
 # ─── Orquestrador ─────────────────────────────────────────────────────────────
 async def main():
-    log.info("═══ Replicante V6.6.1 (Correções Críticas + Robustez) ═══")
+    log.info("═══ Replicante V6.6.2 (FIX: Isolamento Previsão da Redação) ═══")
 
     if not Config.SCRAPINGANT_KEY:
         log.error("SCRAPINGANT_API_KEY ausente")
@@ -1337,21 +1327,17 @@ async def main():
 
             return game
 
-        # [FIX-9] Processamento paralelo real com controle de concorrência
         semaphore = asyncio.Semaphore(Config.CONCURRENCY_LIMIT)
-        
+
         async def process_with_limit(game: GameData) -> Optional[GameData]:
             async with semaphore:
                 result = await process(game)
-                # Delay entre jogos para não sobrecarregar
                 await asyncio.sleep(1.0 + random.uniform(0, 0.5))
                 return result
 
-        # Processa em paralelo mas limitado
         tasks = [process_with_limit(g) for g in games]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Filtra resultados válidos
+
         valid = []
         for r in results:
             if isinstance(r, Exception):
