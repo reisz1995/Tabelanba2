@@ -1,14 +1,14 @@
 """
-NBA Scraper - Kimi/Replicante V6.6.9 (Cross-Timezone Topology)
+NBA Scraper - Kimi/Replicante V7.0.0 (Dissecação HUD e DB Minimalista)
 Correcções e Optimizacões:
-  - [FIX] Recalibração do cálculo temporal (ET -> UTC -> BRT) para capturar 100% dos jogos.
-  - [FIX] Resolução da nomenclatura para jogos de Playoffs sem adversário definido (TBD).
-  - [MAINTAIN] Expurgado de inferência Groq e Zona de Imunidade activa.
+  - [UPDATE] Expurgo total de modelos de IA (Groq/Gemini).
+  - [UPDATE] Extracção de equipas via dissecação de interface (DOM text block) em vez de URL.
+  - [FIX] Mapeamento estrito do DatabaseManager com o esquema SQL relacional simplificado.
+  - [MAINTAIN] Topologia Temporal (Fuso Cruzado ET/BRT) e purificação de vectores textuais.
 """
 
 import os
 import re
-import json
 import logging
 import asyncio
 import httpx
@@ -24,7 +24,7 @@ from supabase import create_client, Client
 # ─── Logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] [NBA-V6.6.9] %(message)s",
+    format="%(asctime)s [%(levelname)s] [NBA-V7.0.0] %(message)s",
 )
 log = logging.getLogger(__name__)
 
@@ -45,78 +45,10 @@ class Config:
     SCRAPINGANT_KEY  = os.environ.get("SCRAPINGANT_API_KEY", "")
     BASE_URL         = "https://scores24.live"
     PREDICTIONS_URL  = f"{BASE_URL}/pt/basketball/l-usa-nba"
-    CONCURRENCY_LIMIT = 5
+    CONCURRENCY_LIMIT = 3 # Limite rigoroso para poupar CPU/RAM
 
 
 # ─── Modelos ──────────────────────────────────────────────────────────────────
-
-class OddsData(BaseModel):
-    v1: Optional[float] = None
-    x: Optional[float] = None
-    v2: Optional[float] = None
-
-class H2HMatch(BaseModel):
-    date: str
-    home_team: str
-    away_team: str
-    home_score: int
-    away_score: int
-
-class H2HData(BaseModel):
-    total_matches: int = 0
-    home_wins: int = 0
-    away_wins: int = 0
-    home_win_pct: float = 0.0
-    recent_matches: List[H2HMatch] = []
-
-class RecentForm(BaseModel):
-    date: str
-    opponent: str
-    is_home: bool
-    result: str
-    team_score: int
-    opponent_score: int
-
-class TeamForm(BaseModel):
-    team_name: str
-    position_conference: Optional[str] = None
-    wins_last_10: Optional[int] = None
-    recent_matches: List[RecentForm] = []
-
-class Injury(BaseModel):
-    player: str
-    status: str
-    details: Optional[str] = None
-
-class Lineup(BaseModel):
-    probable: List[str] = []
-    confirmed: List[str] = []
-    doubts: List[str] = []
-
-class TeamNews(BaseModel):
-    injuries: List[Injury] = []
-    lineup: Lineup = Field(default_factory=Lineup)
-
-class TopScorer(BaseModel):
-    player: str
-    ppg: float
-
-class ThreePointStats(BaseModel):
-    pct: float
-    rank: Optional[str] = None
-
-class TeamStats(BaseModel):
-    points_scored_avg: Optional[float] = None
-    points_allowed_avg: Optional[float] = None
-    top_scorer: Optional[TopScorer] = None
-    three_point: Optional[ThreePointStats] = None
-
-class EditorialPick(BaseModel):
-    recommendation: str
-    handicap_line: Optional[str] = None
-    odds: Optional[float] = None
-    explanation: Optional[str] = None
-
 class GameData(BaseModel):
     slug: str
     game_date: str
@@ -132,17 +64,6 @@ class GameData(BaseModel):
     confidence_pct: Optional[int] = None
     game_status: str = "Scheduled"
     scraped_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    
-    odds: Optional[OddsData] = None
-    h2h: Optional[H2HData] = None
-    home_form: Optional[TeamForm] = None
-    away_form: Optional[TeamForm] = None
-    home_news: Optional[TeamNews] = None
-    away_news: Optional[TeamNews] = None
-    home_stats: Optional[TeamStats] = None
-    away_stats: Optional[TeamStats] = None
-    editorial_pick: Optional[EditorialPick] = None
-    
     tactical_prediction: Optional[str] = None
 
 
@@ -262,8 +183,7 @@ class NBAExtractor:
 
     def extract_games_list(self, html: str, target_date: str) -> List[GameData]:
         """
-        Extracção Vectorial V6.6.9: Cross-Timezone Topology.
-        Harmonização matemática entre a data UTC da URL e a hora Eastern Time (ET) do DOM.
+        Extracção Vectorial V7.0.0: Dissecação de Interface e Topologia Temporal.
         """
         soup = BeautifulSoup(html, "html.parser")
         games = []
@@ -286,21 +206,19 @@ class NBAExtractor:
             raw_slug = match.group(2)
             url_date_obj = datetime.strptime(url_date_str, "%d-%m-%Y").date()
             
-            node_text = a.get_text(separator=" ", strip=True).lower()
-            time_match = re.search(r"(\d{2}:\d{2})", node_text)
+            node_text = a.get_text(separator="|", strip=True)
+            node_text_lower = node_text.lower()
+            time_match = re.search(r"(\d{2}:\d{2})", node_text_lower)
             
             if time_match:
                 h, m = map(int, time_match.group(1).split(':'))
                 et_hour = h
                 
-                # Cálculo de Topologia: A URL é gerada em UTC. O HTML do proxy é ET.
-                # Se o ET hour for suficientemente tarde (ex: 20:00), o UTC (+4) entra noutro dia.
                 if et_hour + 4 >= 24:
                     game_et_date = url_date_obj - timedelta(days=1)
                 else:
                     game_et_date = url_date_obj
                     
-                # Conversão para o Brasil (BRT = ET + 1 no mês de Abril)
                 brt_h = (et_hour + 1) % 24
                 game_brt_time = f"{brt_h:02d}:{m:02d}"
                 
@@ -309,11 +227,9 @@ class NBAExtractor:
                 else:
                     game_brt_date = game_et_date
             else:
-                # Fallback de segurança para nodos sem relógio visível
                 game_brt_date = url_date_obj - timedelta(days=1)
                 game_brt_time = "20:00"
 
-            # Isolamento absoluto
             if game_brt_date != dt_target:
                 if not time_match and url_date_obj == dt_target:
                     pass
@@ -331,19 +247,22 @@ class NBAExtractor:
 
             imgs = a.find_all("img")
             alts = [img.get("alt", "").strip() for img in imgs if img.get("alt")]
+            
             if len(alts) >= 2:
                 home, away = self.clean_team(alts[0]), self.clean_team(alts[1])
             else:
-                # Patch de Formatação para jogos TBD (Winner of Game X)
-                if "winner-of" in clean_teams:
-                    home, away = "TBD", "TBD"
+                raw_fragments = node_text.split("|")
+                valid_names = [
+                    t.strip() for t in raw_fragments 
+                    if not re.search(r'\d|previsão|prognóstico|nossa escolha', t, re.I) and len(t.strip()) > 3
+                ]
+                if len(valid_names) >= 2:
+                    home = self.clean_team(valid_names[0]).title()
+                    away = self.clean_team(valid_names[1]).title()
                 else:
-                    parts = clean_teams.split("-")
-                    mid = len(parts) // 2
-                    home = " ".join(parts[:mid]).title()
-                    away = " ".join(parts[mid:]).title()
+                    home, away = "Equipa Casa", "Equipa Visitante"
 
-            conf_match = re.search(r"(\d{1,3})%", node_text)
+            conf_match = re.search(r"(\d{1,3})%", node_text_lower)
 
             games.append(GameData(
                 slug=slug_clean,
@@ -360,7 +279,7 @@ class NBAExtractor:
                 confidence_pct=int(conf_match.group(1)) if conf_match else None,
             ))
 
-        log.info(f"  → Matriz de Busca Activa (V6.6.9): {len(games)} partidas capturadas.")
+        log.info(f"  → Matriz Matemática (V7.0.0): {len(games)} partidas isoladas.")
         return games
 
     def extract_full_prediction(self, html: str, game: GameData) -> None:
@@ -368,213 +287,8 @@ class NBAExtractor:
             return
             
         soup = BeautifulSoup(html, "html.parser")
-        
-        game.odds = self._extract_odds(soup)
-        game.h2h = self._extract_h2h(soup)
-        game.home_form, game.away_form = self._extract_form(soup, game)
-        game.home_news, game.away_news = self._extract_news(soup, game)
-        game.home_stats, game.away_stats = self._extract_stats(soup, game)
-        game.editorial_pick = self._extract_editorial(soup)
-        
         game.tactical_prediction = self._extract_text_v3(soup)
-        
-        log.info(f"  → Texto extraído: {len(game.tactical_prediction) if game.tactical_prediction else 0} chars | "
-                f"Odds: {bool(game.odds)} | H2H: {bool(game.h2h)}")
-
-    def _extract_odds(self, soup: BeautifulSoup) -> Optional[OddsData]:
-        try:
-            odds = OddsData()
-            all_text = soup.get_text()
-            pattern = r'V1.*?(\d+\.\d+).*?X.*?(\d+\.\d+).*?V2.*?(\d+\.\d+)'
-            match = re.search(pattern, all_text, re.DOTALL)
-            if match:
-                odds.v1, odds.x, odds.v2 = float(match.group(1)), float(match.group(2)), float(match.group(3))
-            return odds if odds.v1 else None
-        except:
-            return None
-
-    def _extract_h2h(self, soup: BeautifulSoup) -> Optional[H2HData]:
-        try:
-            h2h = H2HData()
-            section = soup.find(string=re.compile(r"Confrontos diretos|Estatísticas H2H", re.I))
-            if not section:
-                return None
-            container = section.find_parent(["div", "section"])
-            if not container:
-                return None
-                
-            text = container.get_text()
-            pcts = re.findall(r'(\d+)%', text)
-            if len(pcts) >= 2:
-                h2h.home_win_pct = float(pcts[0])
-            wins = re.findall(r'(\d+)\s*Vitórias?', text)
-            if len(wins) >= 2:
-                h2h.home_wins, h2h.away_wins = int(wins[0]), int(wins[1])
-                h2h.total_matches = h2h.home_wins + h2h.away_wins
-            
-            for row in container.find_all("tr")[:5]:
-                cells = row.find_all(["td", "th"])
-                if len(cells) >= 4:
-                    scores = re.findall(r'(\d+)', cells[3].get_text())
-                    if len(scores) >= 2:
-                        h2h.recent_matches.append(H2HMatch(
-                            date=cells[0].get_text(strip=True),
-                            home_team=cells[1].get_text(strip=True),
-                            away_team=cells[2].get_text(strip=True),
-                            home_score=int(scores[0]),
-                            away_score=int(scores[1])
-                        ))
-            return h2h
-        except:
-            return None
-
-    def _extract_form(self, soup: BeautifulSoup, game: GameData) -> tuple:
-        home_form = TeamForm(team_name=game.home_team)
-        away_form = TeamForm(team_name=game.away_team)
-        try:
-            for section in soup.find_all(string=re.compile(r"Resultados dos jogos", re.I)):
-                container = section.find_parent(["div", "section"])
-                if not container:
-                    continue
-                text = container.get_text()
-                target = home_form if game.home_team.split()[-1] in text else away_form
-                win_match = re.search(r'(\d+)\s*vitórias?\s*nos\s*últimos\s*dez', text, re.I)
-                if win_match:
-                    target.wins_last_10 = int(win_match.group(1))
-                pos_match = re.search(r'(\d+)[º°o].*?lugar.*?Conferência', text, re.I)
-                if pos_match:
-                    target.position_conference = pos_match.group(1) + "º"
-            return home_form, away_form
-        except:
-            return home_form, away_form
-
-    def _extract_news(self, soup: BeautifulSoup, game: GameData) -> tuple:
-        home_news = TeamNews()
-        away_news = TeamNews()
-        try:
-            section = soup.find(string=re.compile(r"Últimas notícias", re.I))
-            if not section:
-                return home_news, away_news
-            container = section.find_parent(["div", "section"])
-            if not container:
-                return home_news, away_news
-            text = container.get_text()
-            
-            for pattern in [
-                r'([A-Z][a-z]+)\s+está\s+(fora|duvida|dúvida|provável)',
-                r'participação\s+de\s+([A-Z][a-z]+)\s+([\w\s]+)'
-            ]:
-                for match in re.finditer(pattern, text, re.I):
-                    player, status = match.group(1), match.group(2).lower()
-                    injury = Injury(
-                        player=player,
-                        status="fora" if "fora" in status else "dúvida" if "duvida" in status or "dúvida" in status else "provável"
-                    )
-                    if game.home_team.split()[-1] in text[:text.find(player)]:
-                        home_news.injuries.append(injury)
-                    else:
-                        away_news.injuries.append(injury)
-            return home_news, away_news
-        except:
-            return home_news, away_news
-
-    def _extract_stats(self, soup: BeautifulSoup, game: GameData) -> tuple:
-        home_stats = TeamStats()
-        away_stats = TeamStats()
-        try:
-            section = soup.find(string=re.compile(r"Artilheiros", re.I))
-            if section and section.find_parent(["div", "section"]):
-                text = section.find_parent(["div", "section"]).get_text()
-                for match in re.finditer(r'([A-Z][a-z]+)[^,]+?(\d+\.\d+)\s*pontos?', text):
-                    player, ppg = match.group(1), float(match.group(2))
-                    scorer = TopScorer(player=player, ppg=ppg)
-                    if game.home_team.split()[-1] in text[:text.find(player)]:
-                        home_stats.top_scorer = scorer
-                    else:
-                        away_stats.top_scorer = scorer
-
-            analysis = soup.find(attrs={"data-testid": "DisplayContent"})
-            if analysis:
-                pts = re.findall(r'(\d+\.\d+)\s*pontos', analysis.get_text())
-                if len(pts) >= 4:
-                    home_stats.points_scored_avg = float(pts[0])
-                    home_stats.points_allowed_avg = float(pts[1])
-                    away_stats.points_scored_avg = float(pts[2])
-                    away_stats.points_allowed_avg = float(pts[3])
-            return home_stats, away_stats
-        except:
-            return home_stats, away_stats
-
-    def _extract_editorial(self, soup: BeautifulSoup) -> Optional[EditorialPick]:
-        try:
-            section = soup.find(string=re.compile(r"Previsão da Redação|NOSSA ESCOLHA", re.I))
-            if not section:
-                return None
-            container = section.find_parent(["div", "section"])
-            if not container:
-                return None
-            text = container.get_text()
-            pick = EditorialPick(recommendation="")
-            
-            if "vitória dos visitantes" in text.lower():
-                pick.recommendation = "vitoria_visitante"
-            elif "vitória" in text.lower() and "casa" in text.lower():
-                pick.recommendation = "vitoria_casa"
-            elif "handicap" in text.lower():
-                pick.recommendation = "handicap"
-                
-            handicap = re.search(r'([\+-]\d+\.?\d*)', text)
-            if handicap:
-                pick.handicap_line = handicap.group(1)
-            odds = re.search(r'(\d+\.\d+)\*?', text)
-            if odds:
-                pick.odds = float(odds.group(1))
-            p = container.find("p")
-            if p:
-                pick.explanation = p.get_text(strip=True)
-            return pick if pick.recommendation else None
-        except:
-            return None
-
-    def _extract_json_ld(self, soup: BeautifulSoup) -> Optional[str]:
-        try:
-            for script in soup.find_all("script", type="application/ld+json"):
-                try:
-                    data = json.loads(script.string or "")
-                    if isinstance(data, list):
-                        data = data[0]
-                    
-                    if data.get("@type") == "NewsArticle" or data.get("@type") == "Article":
-                        article_body = data.get("articleBody", "")
-                        description = data.get("description", "")
-                        
-                        text = article_body if len(article_body) > len(description) else description
-                        
-                        if text and len(text) > 150:
-                            clean_text = BeautifulSoup(text, "html.parser").get_text(separator=" ", strip=True)
-                            return clean_text
-                            
-                except (json.JSONDecodeError, AttributeError):
-                    continue
-            return None
-        except Exception as e:
-            log.error(f"Erro na extracção de JSON-LD: {e}")
-            return None
-
-    def _extract_text_v3(self, soup: BeautifulSoup) -> Optional[str]:
-        main_content = soup.find("main") or soup.find("body")
-        if main_content:
-            text = self._process_text_container(main_content, min_length=300)
-            if text:
-                log.info(f"  → Extracção DOM profunda bem-sucedida ({len(text)} caracteres).")
-                return text
-
-        text_from_json = self._extract_json_ld(soup)
-        if text_from_json and len(text_from_json) > 100:
-            log.warning("  → Alerta: Retornando apenas fragmento introdutório (Fallback JSON-LD).")
-            return text_from_json
-
-        return None
+        log.info(f"  → Texto extraído: {len(game.tactical_prediction) if game.tactical_prediction else 0} chars")
 
     def _process_text_container(self, container, min_length=150) -> Optional[str]:
         if not container:
@@ -651,47 +365,29 @@ class NBAExtractor:
         
         return result if len(result) >= min_length else None
 
+    def _extract_text_v3(self, soup: BeautifulSoup) -> Optional[str]:
+        main_content = soup.find("main") or soup.find("body")
+        if main_content:
+            text = self._process_text_container(main_content, min_length=300)
+            if text:
+                return text
+        return None
+
 
 # ─── Persistência ─────────────────────────────────────────────────────────────
 class DatabaseManager:
     def __init__(self):
         self.sb: Client = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
-        self._known_columns: Optional[Set[str]] = None
-
-    def _get_table_columns(self) -> Set[str]:
-        if self._known_columns is not None:
-            return self._known_columns
-        
-        try:
-            result = self.sb.table("nba_games_schedule").select("*").limit(1).execute()
-            if result.data:
-                columns = set(result.data[0].keys())
-            else:
-                columns = {
-                    "id", "slug", "game_date", "game_time_et", "game_time_brt",
-                    "home_team", "away_team", "home_team_pt", "away_team_pt",
-                    "home_tri", "away_tri", "source_url", "confidence_pct",
-                    "game_status", "scraped_at", "tactical_prediction"
-                }
-            self._known_columns = columns
-            return columns
-        except Exception as e:
-            log.warning(f"Não foi possível detectar colunas: {e}")
-            return {
-                "slug", "game_date", "game_time_et", "game_time_brt",
-                "home_team", "away_team", "home_team_pt", "away_team_pt",
-                "home_tri", "away_tri", "source_url", "tactical_prediction"
-            }
+        # Mapeamento rigoroso das 16 colunas exactas da tabela SQL simplificada
+        self.target_columns = {
+            "slug", "game_date", "game_time_et", "game_time_brt",
+            "home_team", "away_team", "home_team_pt", "away_team_pt",
+            "home_tri", "away_tri", "source_url", "confidence_pct",
+            "game_status", "scraped_at", "tactical_prediction"
+        }
 
     def get_cached(self) -> Dict[str, dict]:
-        columns = self._get_table_columns()
-        select_cols = ["slug", "game_date"]
-        
-        if "tactical_prediction" in columns:
-            select_cols.append("tactical_prediction")
-        
-        res = self.sb.table("nba_games_schedule").select(",".join(select_cols)).execute()
-        
+        res = self.sb.table("nba_games_schedule").select("slug,game_date,tactical_prediction").execute()
         return {
             row["slug"]: {
                 "game_date": row.get("game_date"),
@@ -701,7 +397,6 @@ class DatabaseManager:
         }
 
     def upsert_games(self, games: List[GameData]):
-        columns = self._get_table_columns()
         seen = set()
         unique = []
         for g in games:
@@ -716,28 +411,8 @@ class DatabaseManager:
         rows = []
         for g in unique:
             row: Dict[str, Any] = {}
-            
-            basic_fields = {
-                "slug", "game_date", "game_time_et", "game_time_brt",
-                "home_team", "away_team", "home_team_pt", "away_team_pt",
-                "home_tri", "away_tri", "source_url", "confidence_pct",
-                "game_status", "scraped_at", "tactical_prediction"
-            }
-            
-            for field in basic_fields:
-                if field in columns:
-                    row[field] = getattr(g, field)
-            
-            json_fields = {
-                "odds": g.odds, "h2h": g.h2h, "home_form": g.home_form,
-                "away_form": g.away_form, "home_news": g.home_news,
-                "away_news": g.away_news, "home_stats": g.home_stats,
-                "away_stats": g.away_stats, "editorial_pick": g.editorial_pick
-            }
-            
-            for field, value in json_fields.items():
-                if field in columns and value is not None:
-                    row[field] = json.dumps(value, ensure_ascii=False, default=str)
+            for field in self.target_columns:
+                row[field] = getattr(g, field, None)
             
             if not row.get("tactical_prediction"):
                 log.warning(f"  → {g.slug}: SEM tactical_prediction processada.")
@@ -756,7 +431,7 @@ class DatabaseManager:
 
 # ─── Orquestrador ─────────────────────────────────────────────────────────────
 async def main():
-    log.info("═══ Motor Activo: Kimi/Replicante V6.6.9 (Sincronização UTC/ET) ═══")
+    log.info("═══ Motor Activo: Kimi/Replicante V7.0.0 (Base Minimalista) ═══")
 
     if not Config.SCRAPINGANT_KEY:
         log.error("SCRAPINGANT_API_KEY crítica não fornecida.")
@@ -783,8 +458,7 @@ async def main():
 
         async def process(game: GameData) -> GameData:
             cached = cache.get(game.slug, {})
-            has_empty_text = cached.get("has_text") and not cached.get("text_length", 0)
-            needs_update = not cached.get("has_text") or has_empty_text
+            needs_update = not cached.get("has_text")
             
             if not needs_update and cached.get("game_date") == game.game_date:
                 log.info(f"[{game.away_tri} @ {game.home_tri}] → Ciclo ignorado. Cache preenchido.")
@@ -797,19 +471,8 @@ async def main():
             
             if html:
                 ext.extract_full_prediction(html, game)
-                
                 if not game.tactical_prediction:
-                    log.warning(f"[{game.away_tri} @ {game.home_tri}] → Activando fallback seguro forçado...")
-                    soup = BeautifulSoup(html, "html.parser")
-                    fallback_text = ext._extract_text_v3(soup)
-                    if fallback_text:
-                        game.tactical_prediction = fallback_text
-                    else:
-                        log.warning(f"[{game.away_tri} @ {game.home_tri}] → Vector não passível de reconstrução. Excluído.")
-                
-                has_text = bool(game.tactical_prediction)
-                log.info(f"[{game.away_tri} @ {game.home_tri}] → Leitura vectorizada: {has_text} ({len(game.tactical_prediction) if game.tactical_prediction else 0} bytes)")
-
+                    log.warning(f"[{game.away_tri} @ {game.home_tri}] → Vector não passível de reconstrução. Excluído.")
             else:
                 log.warning(f"[{game.away_tri} @ {game.home_tri}] → 404/Timeout no processamento do HTML.")
 
@@ -823,7 +486,8 @@ async def main():
             except Exception as e:
                 results.append(e)
                 log.error(f"[{g.away_tri} @ {g.home_tri}] → Falha Sistémica: {e}")
-            await asyncio.sleep(3)
+            # Estrangulamento forçado para evitar 409 Too Many Requests e pico de RAM
+            await asyncio.sleep(4)
 
         valid = []
         for g, r in zip(games, results):
