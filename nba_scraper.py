@@ -1,9 +1,9 @@
 """
-NBA Scraper - Kimi/Replicante V6.6.5 (Reconstrução Criptográfica e Calendário Matriz)
+NBA Scraper - Kimi/Replicante V6.6.6 (Topologia Temporal Matemática)
 Correcções e Optimizacões:
-  - [UPDATE] Redireccionamento de extracção para o calendário mestre (/l-usa-nba).
-  - [FIX] Regex desbloqueado e reconstrução de slugs para capturar 100% dos jogos.
-  - [FIX] Renderização JS forçada na captura da lista raiz.
+  - [UPDATE] Redireccionamento absoluto para a rota /predictions.
+  - [FIX] Timezone Drift resolvido via cálculo UTC->BRT directamente no Regex.
+  - [FIX] Descomissionamento da função antiga de parse_time.
   - [MAINTAIN] Zona de Imunidade activa para Previsão da Redacção.
 """
 
@@ -25,7 +25,7 @@ from supabase import create_client, Client
 # ─── Logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] [NBA-V6.6.5] %(message)s",
+    format="%(asctime)s [%(levelname)s] [NBA-V6.6.6] %(message)s",
 )
 log = logging.getLogger(__name__)
 
@@ -47,8 +47,7 @@ class Config:
     GROQ_API_KEY     = os.environ.get("GROQ_API_KEY", "")
     GROQ_MODEL       = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
     BASE_URL         = "https://scores24.live"
-    # PATCH V6.6.5: Apontar estritamente para o calendário matriz absoluto
-    PREDICTIONS_URL  = f"{BASE_URL}/pt/basketball/l-usa-nba"
+    PREDICTIONS_URL  = f"{BASE_URL}/pt/basketball/l-usa-nba/predictions"
     CONCURRENCY_LIMIT = 5
 
 
@@ -361,33 +360,19 @@ class NBAExtractor:
                 return pt
         return team
 
-    def parse_time(self, time_str: Optional[str], date_str: str) -> tuple[str, str]:
-        if not time_str:
-            return "20:00", date_str
-        try:
-            h, m = map(int, time_str.split(":"))
-            h_brt = h - 3
-            dt = datetime.strptime(date_str, "%Y-%m-%d")
-            if h_brt < 0:
-                h_brt += 24
-                dt -= timedelta(days=1)
-            return f"{h_brt:02d}:{m:02d}", dt.strftime("%Y-%m-%d")
-        except Exception:
-            return "20:00", date_str
-
     def extract_games_list(self, html: str, target_date: str) -> List[GameData]:
         """
-        Extracção Vectorial V6.6.5: Tolerância a lixo de rastreamento na URL e reconstrução matemática.
+        Extracção Vectorial V6.6.6: Topologia Temporal Matemática.
+        Constrói um timestamp UTC a partir da URL e do DOM, convertendo para BRT.
+        Resolve o 'Timezone Drift' para partidas nocturnas na janela americana.
         """
         soup = BeautifulSoup(html, "html.parser")
         games = []
         
-        # Padrão flexível para ignorar query parameters no DOM
         pattern = re.compile(r"/pt/basketball/m-(\d{2}-\d{2}-\d{4})-([^/?#]+)")
         seen_slugs: set[str] = set()
 
-        dt_target = datetime.strptime(target_date, "%Y-%m-%d")
-        target_signature = dt_target.strftime("%d-%m-%Y")
+        dt_target = datetime.strptime(target_date, "%Y-%m-%d").date()
         
         for a in soup.find_all("a", href=True):
             href = a["href"]
@@ -398,27 +383,42 @@ class NBAExtractor:
             if not match:
                 continue
 
-            url_date = match.group(1)
+            url_date_str = match.group(1)
             raw_slug = match.group(2)
             
-            # Validação matemática da assinatura de data
-            if url_date != target_signature:
+            node_text = a.get_text(separator=" ", strip=True).lower()
+            time_match = re.search(r"(\d{2}:\d{2})", node_text)
+            
+            # Cálculo de Topologia Temporal (Site Time -> BRT Offset)
+            if time_match:
+                site_time_str = time_match.group(1)
+                try:
+                    utc_dt = datetime.strptime(f"{url_date_str} {site_time_str}", "%d-%m-%Y %H:%M")
+                    brt_dt = utc_dt - timedelta(hours=3)
+                    game_brt_date = brt_dt.date()
+                    game_brt_time = brt_dt.strftime("%H:%M")
+                except ValueError:
+                    continue
+            else:
+                try:
+                    utc_dt = datetime.strptime(url_date_str, "%d-%m-%Y")
+                    game_brt_date = utc_dt.date()
+                    game_brt_time = "20:00"
+                except ValueError:
+                    continue
+
+            # Filtro de Validação de Fronteira Diária
+            if game_brt_date != dt_target:
                 continue
 
-            # Reconstrução estrita do Slug
             clean_teams = raw_slug.replace("-prediction", "")
-            slug_clean = f"m-{url_date}-{clean_teams}"
+            slug_clean = f"m-{url_date_str}-{clean_teams}"
             
             if slug_clean in seen_slugs:
                 continue
             seen_slugs.add(slug_clean)
 
-            # Reconstrução da URL Origem para evitar caminhos quebrados
             source_url = f"{Config.BASE_URL}/pt/basketball/{slug_clean}"
-
-            node_text = a.get_text(separator=" ", strip=True).lower()
-            time_match = re.search(r"(\d{2}:\d{2})", node_text)
-            t_brt, _ = self.parse_time(time_match.group(1) if time_match else None, target_date)
 
             imgs = a.find_all("img")
             alts = [img.get("alt", "").strip() for img in imgs if img.get("alt")]
@@ -435,8 +435,8 @@ class NBAExtractor:
             games.append(GameData(
                 slug=slug_clean,
                 game_date=target_date,
-                game_time_et=time_match.group(1) if time_match else None,
-                game_time_brt=t_brt,
+                game_time_et=None,
+                game_time_brt=game_brt_time,
                 home_team=home,
                 away_team=away,
                 home_team_pt=self.translate_team(home),
@@ -447,7 +447,7 @@ class NBAExtractor:
                 confidence_pct=int(conf_match.group(1)) if conf_match else None,
             ))
 
-        log.info(f"  → Matriz de Busca (V6.6.5): {len(games)} jogos isolados para a assinatura [{target_signature}].")
+        log.info(f"  → Matriz Matemática (V6.6.6): {len(games)} jogos perfeitamente alinhados ao fuso BRT [{target_date}].")
         return games
 
     def extract_full_prediction(self, html: str, game: GameData) -> None:
@@ -843,7 +843,7 @@ class DatabaseManager:
 
 # ─── Orquestrador ─────────────────────────────────────────────────────────────
 async def main():
-    log.info("═══ Motor Activo: Kimi/Replicante V6.6.5 (Injecção de Calendário Matriz) ═══")
+    log.info("═══ Motor Activo: Kimi/Replicante V6.6.6 (Topologia Temporal Matemática) ═══")
 
     if not Config.SCRAPINGANT_KEY:
         log.error("SCRAPINGANT_API_KEY crítica não fornecida.")
@@ -856,10 +856,9 @@ async def main():
     db = DatabaseManager()
 
     try:
-        # V6.6.5: Força a renderização JS do calendário raiz para garantir acesso universal a todos os nós
         html_list = await fetch_with_retry(net, Config.PREDICTIONS_URL)
         if not html_list:
-            log.error("Excepção não resolvida na captura do calendário matriz.")
+            log.error("Excepção não resolvida na captura da matriz raiz.")
             return
 
         today = datetime.now(BRT).strftime("%Y-%m-%d")
