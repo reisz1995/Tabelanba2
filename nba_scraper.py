@@ -1,10 +1,9 @@
 """
-NBA Scraper - Kimi/Replicante V6.6.6 (Topologia Temporal Matemática)
+NBA Scraper - Kimi/Replicante V6.6.8 (Expurgo do Módulo Groq)
 Correcções e Optimizacões:
-  - [UPDATE] Redireccionamento absoluto para a rota /predictions.
-  - [FIX] Timezone Drift resolvido via cálculo UTC->BRT directamente no Regex.
-  - [FIX] Descomissionamento da função antiga de parse_time.
-  - [MAINTAIN] Zona de Imunidade activa para Previsão da Redacção.
+  - [UPDATE] Remoção total da integração com a API Groq.
+  - [UPDATE] Limpeza de modelos de dados, rotinas de rede e queries SQL associadas.
+  - [MAINTAIN] Topologia Temporal e Zona de Imunidade mantidas activas.
 """
 
 import os
@@ -25,7 +24,7 @@ from supabase import create_client, Client
 # ─── Logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] [NBA-V6.6.6] %(message)s",
+    format="%(asctime)s [%(levelname)s] [NBA-V6.6.8] %(message)s",
 )
 log = logging.getLogger(__name__)
 
@@ -44,10 +43,8 @@ class Config:
     SUPABASE_URL     = _require_env("SUPABASE_URL")
     SUPABASE_KEY     = _require_env("SUPABASE_SERVICE_KEY")
     SCRAPINGANT_KEY  = os.environ.get("SCRAPINGANT_API_KEY", "")
-    GROQ_API_KEY     = os.environ.get("GROQ_API_KEY", "")
-    GROQ_MODEL       = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
     BASE_URL         = "https://scores24.live"
-    PREDICTIONS_URL  = f"{BASE_URL}/pt/basketball/l-usa-nba/predictions"
+    PREDICTIONS_URL  = f"{BASE_URL}/pt/basketball/l-usa-nba"
     CONCURRENCY_LIMIT = 5
 
 
@@ -120,16 +117,6 @@ class EditorialPick(BaseModel):
     odds: Optional[float] = None
     explanation: Optional[str] = None
 
-class GroqInsight(BaseModel):
-    confidence_score: float = Field(..., ge=0, le=5)
-    fair_line: str
-    edge_percentage: float
-    key_factors: List[str]
-    recommendation: str
-    stake_units: float = Field(..., ge=0.5, le=5)
-    reasoning: str
-    generated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-
 class GameData(BaseModel):
     slug: str
     game_date: str
@@ -157,53 +144,6 @@ class GameData(BaseModel):
     editorial_pick: Optional[EditorialPick] = None
     
     tactical_prediction: Optional[str] = None
-    groq_insight: Optional[GroqInsight] = None
-
-    def to_groq_prompt(self) -> str:
-        """Gera prompt de sistema estruturado para inferência Groq."""
-        def implied_prob(odds: float) -> float:
-            return 100 / odds if odds > 0 else 0
-        
-        home_implied = implied_prob(self.odds.v1) if self.odds and self.odds.v1 else 0
-        away_implied = implied_prob(self.odds.v2) if self.odds and self.odds.v2 else 0
-        
-        home_injuries = ", ".join([f"{i.player} ({i.status})" for i in self.home_news.injuries]) if self.home_news else "Nenhuma"
-        away_injuries = ", ".join([f"{i.player} ({i.status})" for i in self.away_news.injuries]) if self.away_news else "Nenhuma"
-        
-        home_form_str = f"{self.home_form.wins_last_10}/10" if self.home_form and self.home_form.wins_last_10 else "N/A"
-        away_form_str = f"{self.away_form.wins_last_10}/10" if self.away_form and self.away_form.wins_last_10 else "N/A"
-        
-        return f"""Você é o Estatístico Chefe de NBA. Analise este jogo.
-
-## DADOS
-{self.away_team} @ {self.home_team} | {self.game_date}
-
-## MERCADO
-- V1: {self.odds.v1 if self.odds else 'N/A'} ({home_implied:.1f}%)
-- V2: {self.odds.v2 if self.odds else 'N/A'} ({away_implied:.1f}%)
-
-## CONTEXTO
-H2H: {self.h2h.total_matches if self.h2h else 'N/A'} jogos
-Forma: Casa {home_form_str} vs Visitante {away_form_str}
-Lesões Casa: {home_injuries}
-Lesões Visitante: {away_injuries}
-
-## ANÁLISE COMPLETA E PREVISÃO DA REDACÇÃO
-{self.tactical_prediction[:3000] if self.tactical_prediction else 'N/A'}
-
----
-DIRETRIZ: Use modelo linear-pessimista. Desconte margem de segurança nas médias ofensivas.
-
-Retorne JSON:
-{{
-  "confidence_score": 0.0 a 5.0,
-  "fair_line": "ex: O/U 215.5",
-  "edge_percentage": 0.0 a 50.0,
-  "key_factors": ["fator 1", "fator 2"],
-  "recommendation": "OVER/UNDER/FAVORITE/DOG/PASS",
-  "stake_units": 0.5 a 5.0,
-  "reasoning": "explicação em português baseado rigidamente nos dados fornecidos"
-}}"""
 
 
 # ─── Rede ─────────────────────────────────────────────────────────────────────
@@ -237,46 +177,6 @@ class NetworkClient:
                 except Exception as e:
                     log.warning(f"Erro rede: {e}")
                     return None
-            return None
-
-    async def post_groq(self, prompt: str) -> Optional[GroqInsight]:
-        if not Config.GROQ_API_KEY:
-            log.warning("GROQ_API_KEY não configurada")
-            return None
-        
-        try:
-            async with self.semaphore:
-                log.info("  → Groq processando inferência estocástica...")
-                response = await self.client.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {Config.GROQ_API_KEY}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": Config.GROQ_MODEL,
-                        "messages": [
-                            {"role": "system", "content": "Você é o Estatístico Chefe. Responda APENAS em JSON válido."},
-                            {"role": "user", "content": prompt}
-                        ],
-                        "temperature": 0.2,
-                        "max_tokens": 1500,
-                        "response_format": {"type": "json_object"}
-                    },
-                    timeout=30
-                )
-                
-                response.raise_for_status()
-                data = response.json()
-                content = data["choices"][0]["message"]["content"]
-                parsed = json.loads(content)
-                
-                insight = GroqInsight(**parsed)
-                log.info(f"  ← Groq: {insight.recommendation} (conf: {insight.confidence_score}/5)")
-                return insight
-                
-        except Exception as e:
-            log.error(f"Erro Groq: {e}")
             return None
 
     def _prepare_url(self, url: str, use_browser: bool = False) -> str:
@@ -316,6 +216,7 @@ async def fetch_with_retry(net, url: str) -> Optional[str]:
         log.error(f"[FAIL TOTAL] {url[-60:]}")
 
     return html
+
 
 # ─── Extracção ────────────────────────────────────────────────────────────────
 class NBAExtractor:
@@ -361,11 +262,6 @@ class NBAExtractor:
         return team
 
     def extract_games_list(self, html: str, target_date: str) -> List[GameData]:
-        """
-        Extracção Vectorial V6.6.6: Topologia Temporal Matemática.
-        Constrói um timestamp UTC a partir da URL e do DOM, convertendo para BRT.
-        Resolve o 'Timezone Drift' para partidas nocturnas na janela americana.
-        """
         soup = BeautifulSoup(html, "html.parser")
         games = []
         
@@ -389,7 +285,6 @@ class NBAExtractor:
             node_text = a.get_text(separator=" ", strip=True).lower()
             time_match = re.search(r"(\d{2}:\d{2})", node_text)
             
-            # Cálculo de Topologia Temporal (Site Time -> BRT Offset)
             if time_match:
                 site_time_str = time_match.group(1)
                 try:
@@ -407,7 +302,6 @@ class NBAExtractor:
                 except ValueError:
                     continue
 
-            # Filtro de Validação de Fronteira Diária
             if game_brt_date != dt_target:
                 continue
 
@@ -447,7 +341,7 @@ class NBAExtractor:
                 confidence_pct=int(conf_match.group(1)) if conf_match else None,
             ))
 
-        log.info(f"  → Matriz Matemática (V6.6.6): {len(games)} jogos perfeitamente alinhados ao fuso BRT [{target_date}].")
+        log.info(f"  → Matriz Matemática: {len(games)} jogos alinhados ao fuso BRT [{target_date}].")
         return games
 
     def extract_full_prediction(self, html: str, game: GameData) -> None:
@@ -684,6 +578,13 @@ class NBAExtractor:
             "palpite pago", "vip", "cookie"
         }
         
+        stop_triggers = [
+            "esta previsão vai ser correta", "total de votos", "bónus", "bônus", 
+            "odds para o jogo", "posição na tabela", "estatísticas h2h", 
+            "últimos jogos", "classificação", "outras previsões", "calcule seus",
+            "melhores odds", "welcome bonus"
+        ]
+        
         for elem in container.find_all(["p", "h2", "h3", "div", "span"]):
             
             if elem.name in ["div", "span"] and elem.find(["p", "h2", "h3", "div"]):
@@ -696,14 +597,15 @@ class NBAExtractor:
             text_lower = text.lower()
             is_header = elem.name in ["h2", "h3"]
             
-            if is_header and any(trigger in text_lower for trigger in ["previsão da redação", "nossa escolha", "prognóstico", "palpite"]):
-                capture_immunity = True
-                sections.append(f"\n[ALVO TÁCTICO CONFIRMADO] {text}")
-                last_text = text
+            if any(stop in text_lower for stop in stop_triggers):
+                capture_immunity = False
                 continue
                 
-            if is_header and any(stop in text_lower for stop in ["odds para o jogo", "posição na tabela", "estatísticas h2h", "últimos jogos", "classificação"]):
-                capture_immunity = False
+            if is_header and any(trigger in text_lower for trigger in ["previsão da redação", "nossa escolha", "prognóstico", "palpite"]):
+                capture_immunity = True
+                sections.append(f"\n{text}")
+                last_text = text
+                continue
                 
             if not capture_immunity and not is_header:
                 if len(text) < 45: 
@@ -721,15 +623,14 @@ class NBAExtractor:
             last_text = text
             
             if is_header and not capture_immunity:
-                sections.append(f"\n[SECTION] {text}")
+                sections.append(f"\n{text}")
             else:
                 sections.append(text)
         
         result = "\n\n".join(sections).strip()
         result = re.sub(r'\n{3,}', '\n\n', result)
         
-        status_imunidade = 'OK' if '[ALVO TÁCTICO CONFIRMADO]' in result else 'FALHA'
-        log.info(f"  → Heurística DOM: Imunidade={status_imunidade} | {len(sections)} blocos | {len(result)} chars.")
+        log.info(f"  → Heurística DOM: {len(sections)} blocos | Vector purificado.")
         
         return result if len(result) >= min_length else None
 
@@ -753,7 +654,7 @@ class DatabaseManager:
                     "id", "slug", "game_date", "game_time_et", "game_time_brt",
                     "home_team", "away_team", "home_team_pt", "away_team_pt",
                     "home_tri", "away_tri", "source_url", "confidence_pct",
-                    "game_status", "scraped_at", "tactical_prediction", "groq_insight"
+                    "game_status", "scraped_at", "tactical_prediction"
                 }
             self._known_columns = columns
             return columns
@@ -771,8 +672,6 @@ class DatabaseManager:
         
         if "tactical_prediction" in columns:
             select_cols.append("tactical_prediction")
-        if "groq_insight" in columns:
-            select_cols.append("groq_insight")
         
         res = self.sb.table("nba_games_schedule").select(",".join(select_cols)).execute()
         
@@ -780,7 +679,6 @@ class DatabaseManager:
             row["slug"]: {
                 "game_date": row.get("game_date"),
                 "has_text": bool(row.get("tactical_prediction")),
-                "has_groq": bool(row.get("groq_insight")),
             }
             for row in res.data
         }
@@ -817,8 +715,7 @@ class DatabaseManager:
                 "odds": g.odds, "h2h": g.h2h, "home_form": g.home_form,
                 "away_form": g.away_form, "home_news": g.home_news,
                 "away_news": g.away_news, "home_stats": g.home_stats,
-                "away_stats": g.away_stats, "editorial_pick": g.editorial_pick,
-                "groq_insight": g.groq_insight,
+                "away_stats": g.away_stats, "editorial_pick": g.editorial_pick
             }
             
             for field, value in json_fields.items():
@@ -834,8 +731,7 @@ class DatabaseManager:
             self.sb.table("nba_games_schedule").upsert(rows, on_conflict="slug").execute()
             for r in rows:
                 text_ok = "✓" if r.get("tactical_prediction") else "✗"
-                groq_ok = "✓" if r.get("groq_insight") else "✗"
-                log.info(f"  → Registado: {r['slug'][:40]} | Vector Textual: {text_ok} | Groq:{groq_ok}")
+                log.info(f"  → Registado: {r['slug'][:40]} | Vector Textual: {text_ok}")
         except Exception as e:
             log.error(f"Erro na matriz de persistência de dados: {e}")
             raise
@@ -843,13 +739,11 @@ class DatabaseManager:
 
 # ─── Orquestrador ─────────────────────────────────────────────────────────────
 async def main():
-    log.info("═══ Motor Activo: Kimi/Replicante V6.6.6 (Topologia Temporal Matemática) ═══")
+    log.info("═══ Motor Activo: Kimi/Replicante V6.6.8 (Sem Inferência IA) ═══")
 
     if not Config.SCRAPINGANT_KEY:
         log.error("SCRAPINGANT_API_KEY crítica não fornecida.")
         return
-    if not Config.GROQ_API_KEY:
-        log.warning("GROQ_API_KEY não localizada - injecção da IA suspensa.")
 
     net = NetworkClient()
     ext = NBAExtractor()
@@ -873,7 +767,7 @@ async def main():
         async def process(game: GameData) -> GameData:
             cached = cache.get(game.slug, {})
             has_empty_text = cached.get("has_text") and not cached.get("text_length", 0)
-            needs_update = not cached.get("has_text") or not cached.get("has_groq") or has_empty_text
+            needs_update = not cached.get("has_text") or has_empty_text
             
             if not needs_update and cached.get("game_date") == game.game_date:
                 log.info(f"[{game.away_tri} @ {game.home_tri}] → Ciclo ignorado. Cache preenchido.")
@@ -899,13 +793,6 @@ async def main():
                 has_text = bool(game.tactical_prediction)
                 log.info(f"[{game.away_tri} @ {game.home_tri}] → Leitura vectorizada: {has_text} ({len(game.tactical_prediction) if game.tactical_prediction else 0} bytes)")
 
-                if Config.GROQ_API_KEY and game.tactical_prediction:
-                    prompt = game.to_groq_prompt()
-                    insight = await net.post_groq(prompt)
-                    if insight:
-                        game.groq_insight = insight
-                elif not game.tactical_prediction:
-                    log.warning(f"[{game.away_tri} @ {game.home_tri}] → Anulação Groq: Ausência de blocos de contexto tático.")
             else:
                 log.warning(f"[{game.away_tri} @ {game.home_tri}] → 404/Timeout no processamento do HTML.")
 
@@ -932,9 +819,8 @@ async def main():
             db.upsert_games(valid)
 
         with_text = sum(1 for g in valid if g.tactical_prediction)
-        with_groq = sum(1 for g in valid if g.groq_insight)
         
-        log.info(f"═══ Auditoria de Saída: {len(valid)} nodes | Vectores Limpos: {with_text} | Blocos Estocásticos: {with_groq} ═══")
+        log.info(f"═══ Auditoria de Saída: {len(valid)} nodes | Vectores Limpos: {with_text} ═══")
 
     finally:
         await net.close()
