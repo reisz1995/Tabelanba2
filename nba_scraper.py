@@ -1,9 +1,9 @@
 """
-NBA Scraper - Kimi/Replicante V6.6.8 (Expurgo do Módulo Groq)
+NBA Scraper - Kimi/Replicante V6.6.9 (Cross-Timezone Topology)
 Correcções e Optimizacões:
-  - [UPDATE] Remoção total da integração com a API Groq.
-  - [UPDATE] Limpeza de modelos de dados, rotinas de rede e queries SQL associadas.
-  - [MAINTAIN] Topologia Temporal e Zona de Imunidade mantidas activas.
+  - [FIX] Recalibração do cálculo temporal (ET -> UTC -> BRT) para capturar 100% dos jogos.
+  - [FIX] Resolução da nomenclatura para jogos de Playoffs sem adversário definido (TBD).
+  - [MAINTAIN] Expurgado de inferência Groq e Zona de Imunidade activa.
 """
 
 import os
@@ -24,7 +24,7 @@ from supabase import create_client, Client
 # ─── Logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] [NBA-V6.6.8] %(message)s",
+    format="%(asctime)s [%(levelname)s] [NBA-V6.6.9] %(message)s",
 )
 log = logging.getLogger(__name__)
 
@@ -196,7 +196,6 @@ class NetworkClient:
 
 # ─── Retry Helper ─────────────────────────────────────────────────────────────
 async def fetch_with_retry(net, url: str) -> Optional[str]:
-    """Fluxo robusto de injecção e alternância de browser."""
     log.info(f"[FETCH] {url[-60:]}")
     html = await net.fetch(url, use_browser=True)
     if html:
@@ -262,6 +261,10 @@ class NBAExtractor:
         return team
 
     def extract_games_list(self, html: str, target_date: str) -> List[GameData]:
+        """
+        Extracção Vectorial V6.6.9: Cross-Timezone Topology.
+        Harmonização matemática entre a data UTC da URL e a hora Eastern Time (ET) do DOM.
+        """
         soup = BeautifulSoup(html, "html.parser")
         games = []
         
@@ -281,29 +284,41 @@ class NBAExtractor:
 
             url_date_str = match.group(1)
             raw_slug = match.group(2)
+            url_date_obj = datetime.strptime(url_date_str, "%d-%m-%Y").date()
             
             node_text = a.get_text(separator=" ", strip=True).lower()
             time_match = re.search(r"(\d{2}:\d{2})", node_text)
             
             if time_match:
-                site_time_str = time_match.group(1)
-                try:
-                    utc_dt = datetime.strptime(f"{url_date_str} {site_time_str}", "%d-%m-%Y %H:%M")
-                    brt_dt = utc_dt - timedelta(hours=3)
-                    game_brt_date = brt_dt.date()
-                    game_brt_time = brt_dt.strftime("%H:%M")
-                except ValueError:
-                    continue
+                h, m = map(int, time_match.group(1).split(':'))
+                et_hour = h
+                
+                # Cálculo de Topologia: A URL é gerada em UTC. O HTML do proxy é ET.
+                # Se o ET hour for suficientemente tarde (ex: 20:00), o UTC (+4) entra noutro dia.
+                if et_hour + 4 >= 24:
+                    game_et_date = url_date_obj - timedelta(days=1)
+                else:
+                    game_et_date = url_date_obj
+                    
+                # Conversão para o Brasil (BRT = ET + 1 no mês de Abril)
+                brt_h = (et_hour + 1) % 24
+                game_brt_time = f"{brt_h:02d}:{m:02d}"
+                
+                if brt_h < et_hour:
+                    game_brt_date = game_et_date + timedelta(days=1)
+                else:
+                    game_brt_date = game_et_date
             else:
-                try:
-                    utc_dt = datetime.strptime(url_date_str, "%d-%m-%Y")
-                    game_brt_date = utc_dt.date()
-                    game_brt_time = "20:00"
-                except ValueError:
-                    continue
+                # Fallback de segurança para nodos sem relógio visível
+                game_brt_date = url_date_obj - timedelta(days=1)
+                game_brt_time = "20:00"
 
+            # Isolamento absoluto
             if game_brt_date != dt_target:
-                continue
+                if not time_match and url_date_obj == dt_target:
+                    pass
+                else:
+                    continue
 
             clean_teams = raw_slug.replace("-prediction", "")
             slug_clean = f"m-{url_date_str}-{clean_teams}"
@@ -319,17 +334,21 @@ class NBAExtractor:
             if len(alts) >= 2:
                 home, away = self.clean_team(alts[0]), self.clean_team(alts[1])
             else:
-                parts = clean_teams.split("-")
-                mid = len(parts) // 2
-                home = " ".join(parts[:mid]).title()
-                away = " ".join(parts[mid:]).title()
+                # Patch de Formatação para jogos TBD (Winner of Game X)
+                if "winner-of" in clean_teams:
+                    home, away = "TBD", "TBD"
+                else:
+                    parts = clean_teams.split("-")
+                    mid = len(parts) // 2
+                    home = " ".join(parts[:mid]).title()
+                    away = " ".join(parts[mid:]).title()
 
             conf_match = re.search(r"(\d{1,3})%", node_text)
 
             games.append(GameData(
                 slug=slug_clean,
                 game_date=target_date,
-                game_time_et=None,
+                game_time_et=time_match.group(1) if time_match else None,
                 game_time_brt=game_brt_time,
                 home_team=home,
                 away_team=away,
@@ -341,7 +360,7 @@ class NBAExtractor:
                 confidence_pct=int(conf_match.group(1)) if conf_match else None,
             ))
 
-        log.info(f"  → Matriz Matemática: {len(games)} jogos alinhados ao fuso BRT [{target_date}].")
+        log.info(f"  → Matriz de Busca Activa (V6.6.9): {len(games)} partidas capturadas.")
         return games
 
     def extract_full_prediction(self, html: str, game: GameData) -> None:
@@ -630,8 +649,6 @@ class NBAExtractor:
         result = "\n\n".join(sections).strip()
         result = re.sub(r'\n{3,}', '\n\n', result)
         
-        log.info(f"  → Heurística DOM: {len(sections)} blocos | Vector purificado.")
-        
         return result if len(result) >= min_length else None
 
 
@@ -739,7 +756,7 @@ class DatabaseManager:
 
 # ─── Orquestrador ─────────────────────────────────────────────────────────────
 async def main():
-    log.info("═══ Motor Activo: Kimi/Replicante V6.6.8 (Sem Inferência IA) ═══")
+    log.info("═══ Motor Activo: Kimi/Replicante V6.6.9 (Sincronização UTC/ET) ═══")
 
     if not Config.SCRAPINGANT_KEY:
         log.error("SCRAPINGANT_API_KEY crítica não fornecida.")
