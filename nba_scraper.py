@@ -1,8 +1,3 @@
-content = r'''"""
-NBA Scraper - Replicante V6.6.2 (Focus: Bloco Textual Puro da Analise)
-Filosofia: Extrair SOMENTE o texto analitico. Ignorar odds, H2H, stats, tabelas, widgets.
-"""
-
 import os
 import re
 import json
