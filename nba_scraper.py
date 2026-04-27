@@ -1,9 +1,10 @@
 """
-NBA Scraper - Kimi/Replicante V6.6.4 (Validação O(1) de Datas e Zona de Imunidade)
+NBA Scraper - Kimi/Replicante V6.6.5 (Reconstrução Criptográfica e Calendário Matriz)
 Correcções e Optimizacões:
-  - [UPDATE] Extracção de jogos baseada na assinatura da URL (regex matemático).
-  - [UPDATE] Erradicação de varredura DOM visual ("hoje", "amanhã") para ganho de performance.
-  - [FIX] Preservação integral do Absolute Capture Mode para a Previsão da Redacção.
+  - [UPDATE] Redireccionamento de extracção para o calendário mestre (/l-usa-nba).
+  - [FIX] Regex desbloqueado e reconstrução de slugs para capturar 100% dos jogos.
+  - [FIX] Renderização JS forçada na captura da lista raiz.
+  - [MAINTAIN] Zona de Imunidade activa para Previsão da Redacção.
 """
 
 import os
@@ -24,7 +25,7 @@ from supabase import create_client, Client
 # ─── Logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] [NBA-V6.6.4] %(message)s",
+    format="%(asctime)s [%(levelname)s] [NBA-V6.6.5] %(message)s",
 )
 log = logging.getLogger(__name__)
 
@@ -46,7 +47,8 @@ class Config:
     GROQ_API_KEY     = os.environ.get("GROQ_API_KEY", "")
     GROQ_MODEL       = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
     BASE_URL         = "https://scores24.live"
-    PREDICTIONS_URL  = f"{BASE_URL}/pt/basketball/l-usa-nba/predictions"
+    # PATCH V6.6.5: Apontar estritamente para o calendário matriz absoluto
+    PREDICTIONS_URL  = f"{BASE_URL}/pt/basketball/l-usa-nba"
     CONCURRENCY_LIMIT = 5
 
 
@@ -375,21 +377,21 @@ class NBAExtractor:
 
     def extract_games_list(self, html: str, target_date: str) -> List[GameData]:
         """
-        Extracção Vectorial V6.6.4: Busca determinística dos jogos do dia.
-        Utiliza o filtro matemático da data incorporada na assinatura da URL.
+        Extracção Vectorial V6.6.5: Tolerância a lixo de rastreamento na URL e reconstrução matemática.
         """
         soup = BeautifulSoup(html, "html.parser")
         games = []
         
-        pattern = re.compile(r"/pt/basketball/m-(\d{2}-\d{2}-\d{4})-(.+?)(?:-prediction)?$")
+        # Padrão flexível para ignorar query parameters no DOM
+        pattern = re.compile(r"/pt/basketball/m-(\d{2}-\d{2}-\d{4})-([^/?#]+)")
         seen_slugs: set[str] = set()
 
         dt_target = datetime.strptime(target_date, "%Y-%m-%d")
         target_signature = dt_target.strftime("%d-%m-%Y")
         
-        for a in soup.find_all("a", href=pattern):
-            href = a.get("href", "")
-            if "#" in href:
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if "/m-" not in href:
                 continue
 
             match = pattern.search(href)
@@ -397,17 +399,22 @@ class NBAExtractor:
                 continue
 
             url_date = match.group(1)
-            teams_slug = match.group(2)
+            raw_slug = match.group(2)
             
+            # Validação matemática da assinatura de data
             if url_date != target_signature:
                 continue
 
-            base_href = href.replace("-prediction", "")
-            slug_clean = base_href.replace("/pt/basketball/", "")
+            # Reconstrução estrita do Slug
+            clean_teams = raw_slug.replace("-prediction", "")
+            slug_clean = f"m-{url_date}-{clean_teams}"
             
             if slug_clean in seen_slugs:
                 continue
             seen_slugs.add(slug_clean)
+
+            # Reconstrução da URL Origem para evitar caminhos quebrados
+            source_url = f"{Config.BASE_URL}/pt/basketball/{slug_clean}"
 
             node_text = a.get_text(separator=" ", strip=True).lower()
             time_match = re.search(r"(\d{2}:\d{2})", node_text)
@@ -418,13 +425,12 @@ class NBAExtractor:
             if len(alts) >= 2:
                 home, away = self.clean_team(alts[0]), self.clean_team(alts[1])
             else:
-                parts = teams_slug.split("-")
+                parts = clean_teams.split("-")
                 mid = len(parts) // 2
                 home = " ".join(parts[:mid]).title()
                 away = " ".join(parts[mid:]).title()
 
             conf_match = re.search(r"(\d{1,3})%", node_text)
-            source_url = (Config.BASE_URL + base_href if base_href.startswith("/") else base_href)
 
             games.append(GameData(
                 slug=slug_clean,
@@ -441,7 +447,7 @@ class NBAExtractor:
                 confidence_pct=int(conf_match.group(1)) if conf_match else None,
             ))
 
-        log.info(f"  → Matriz de Busca (V6.6.4): {len(games)} jogos isolados para a assinatura [{target_signature}].")
+        log.info(f"  → Matriz de Busca (V6.6.5): {len(games)} jogos isolados para a assinatura [{target_signature}].")
         return games
 
     def extract_full_prediction(self, html: str, game: GameData) -> None:
@@ -457,7 +463,6 @@ class NBAExtractor:
         game.home_stats, game.away_stats = self._extract_stats(soup, game)
         game.editorial_pick = self._extract_editorial(soup)
         
-        # Fluxo de extracção narrativa principal (Chama a heurística)
         game.tactical_prediction = self._extract_text_v3(soup)
         
         log.info(f"  → Texto extraído: {len(game.tactical_prediction) if game.tactical_prediction else 0} chars | "
@@ -619,7 +624,6 @@ class NBAExtractor:
             return None
 
     def _extract_json_ld(self, soup: BeautifulSoup) -> Optional[str]:
-        """Extrai texto de JSON-LD estruturado como plano de segurança."""
         try:
             for script in soup.find_all("script", type="application/ld+json"):
                 try:
@@ -645,8 +649,6 @@ class NBAExtractor:
             return None
 
     def _extract_text_v3(self, soup: BeautifulSoup) -> Optional[str]:
-        """EXTRACÇÃO REVISADA: Prioridade para varredura total do DOM e controlo do JSON."""
-        
         main_content = soup.find("main") or soup.find("body")
         if main_content:
             text = self._process_text_container(main_content, min_length=300)
@@ -662,10 +664,6 @@ class NBAExtractor:
         return None
 
     def _process_text_container(self, container, min_length=150) -> Optional[str]:
-        """
-        Processador com 'Zona de Imunidade' (Absolute Capture Mode).
-        Garante a extracção ipsis litteris da Previsão da Redacção.
-        """
         if not container:
             return None
             
@@ -845,7 +843,7 @@ class DatabaseManager:
 
 # ─── Orquestrador ─────────────────────────────────────────────────────────────
 async def main():
-    log.info("═══ Motor Activo: Kimi/Replicante V6.6.4 (Extracção Regex) ═══")
+    log.info("═══ Motor Activo: Kimi/Replicante V6.6.5 (Injecção de Calendário Matriz) ═══")
 
     if not Config.SCRAPINGANT_KEY:
         log.error("SCRAPINGANT_API_KEY crítica não fornecida.")
@@ -858,9 +856,10 @@ async def main():
     db = DatabaseManager()
 
     try:
-        html_list = await net.fetch(Config.PREDICTIONS_URL, use_browser=False)
+        # V6.6.5: Força a renderização JS do calendário raiz para garantir acesso universal a todos os nós
+        html_list = await fetch_with_retry(net, Config.PREDICTIONS_URL)
         if not html_list:
-            log.error("Excepção não resolvida na captura da lista raiz.")
+            log.error("Excepção não resolvida na captura do calendário matriz.")
             return
 
         today = datetime.now(BRT).strftime("%Y-%m-%d")
@@ -882,7 +881,7 @@ async def main():
                 return game
 
             pred_url = f"{game.source_url}-prediction"
-            log.info(f"[{game.away_tri} @ {game.home_tri}] → Executando injecção de rede...")
+            log.info(f"[{game.away_tri} @ {game.home_tri}] → Executando injecção de rede para vector táctico...")
             
             html = await fetch_with_retry(net, pred_url)
             
