@@ -1,84 +1,122 @@
 import { createClient } from '@supabase/supabase-js';
-import ws from "ws";
+import ws from 'ws';
 
-const supabaseUrl = process.env.SUPABASE_URL;
-// Mapeamento retificado para consumir a variável exata injetada pelo workflow
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+// ─── Configuração ────────────────────────────────────────────────────────────
 
-if (!supabaseUrl || !supabaseKey) {
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const ESPN_BASE    = 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba';
+const RATE_LIMIT_MS = 800;
+
+if (!SUPABASE_URL || !SUPABASE_KEY) {
   console.error('❌ COLAPSO: Credenciais ausentes da matriz de ambiente.');
   process.exit(1);
 }
 
-const supabase = createClient(supabaseUrl, supabaseKey);
+// Fix Node 20: passa o transport ws explicitamente para o RealtimeClient
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+  realtime: { transport: ws },
+});
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function extractScore(competitor) {
+  const { score } = competitor;
+  if (typeof score === 'object') return score?.value ?? 0;
+  return parseInt(score, 10) || 0;
+}
+
+async function fetchJSON(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status} ao buscar: ${url}`);
+  return res.json();
+}
+
+// ─── Lógica de negócio ───────────────────────────────────────────────────────
+
+async function fetchLast5Games(teamId) {
+  const data = await fetchJSON(`${ESPN_BASE}/teams/${teamId}/schedule`);
+
+  const finishedGames = (data.events ?? [])
+    .filter((e) => e.competitions[0].status.type.state === 'post')
+    .sort((a, b) => new Date(a.date) - new Date(b.date));
+
+  return finishedGames.slice(-5).map((game) => {
+    const comp     = game.competitions[0];
+    const mainTeam = comp.competitors.find((c) => c.id === teamId);
+    const oppTeam  = comp.competitors.find((c) => c.id !== teamId);
+
+    const mainScore = extractScore(mainTeam);
+    const oppScore  = extractScore(oppTeam);
+    const dt        = new Date(game.date);
+
+    return {
+      date:     `${String(dt.getDate()).padStart(2, '0')}/${String(dt.getMonth() + 1).padStart(2, '0')}`,
+      opponent: oppTeam.team.abbreviation,
+      result:   mainTeam.winner ? 'V' : 'D',
+      score:    `${Math.max(mainScore, oppScore)}-${Math.min(mainScore, oppScore)}`,
+    };
+  });
+}
+
+async function upsertTeamRecord(fullName, last5) {
+  const { data, error } = await supabase
+    .from('teams')
+    .update({ record: last5, updated_at: new Date().toISOString() })
+    .eq('name', fullName)
+    .select();
+
+  if (error) {
+    console.error(`❌ Fissura ao injetar ${fullName}: ${error.message}`);
+    return false;
+  }
+
+  if (!data || data.length === 0) {
+    console.warn(`⚠️  ${fullName}: Nenhuma linha encontrada para atualizar.`);
+    return false;
+  }
+
+  console.log(`✅ ${fullName}: Matriz temporal atualizada.`);
+  return true;
+}
+
+// ─── Entry point ─────────────────────────────────────────────────────────────
 
 async function updateTeams() {
-  console.log('🏀 Inicializando atualização de Momentum Global (Topologia JSON Rica)...');
-  
-  try {
-    const espnResponse = await fetch('https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams?limit=100');
-    const espnData = await espnResponse.json();
-    const espnTeams = espnData.sports[0].leagues[0].teams;
+  console.log('🏀 Inicializando atualização de Momentum Global (Topologia JSON Rica)...\n');
 
-    let successCount = 0;
-    let errorCount = 0;
+  const espnData  = await fetchJSON(`${ESPN_BASE}/teams?limit=100`);
+  const espnTeams = espnData.sports[0].leagues[0].teams;
 
-        for (const item of espnTeams) {
-      const teamId = item.team.id;
-      const fullName = item.team.displayName; 
+  let successCount = 0;
+  let errorCount   = 0;
 
-      const scheduleResp = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${teamId}/schedule`);
-      const scheduleData = await scheduleResp.json();
-      
-      // 🛡️ DISSIPADOR TÉRMICO INJETADO: Pausa de 800ms para evitar Rate Limit
-      await new Promise(resolve => setTimeout(resolve, 800));
-      
-      const finishedGames = (scheduleData.events || [])
-        .filter(e => e.competitions[0].status.type.state === 'post')
-        .sort((a, b) => new Date(a.date) - new Date(b.date));
+  for (const item of espnTeams) {
+    const { id: teamId, displayName: fullName } = item.team;
 
-            // ... [Código anterior até a filtragem finishedGames]
+    try {
+      const last5   = await fetchLast5Games(teamId);
+      const success = await upsertTeamRecord(fullName, last5);
 
-      const last5 = finishedGames.slice(-5).map(game => {
-        const comp = game.competitions[0];
-        const mainTeam = comp.competitors.find(c => c.id === teamId);
-        const oppTeam = comp.competitors.find(c => c.id !== teamId);
-        
-        // Extrator Determinístico de Score (Ignora diferenças de tipo da API)
-        const getScore = (c) => typeof c.score === 'object' ? (c.score.value || 0) : (parseInt(c.score) || 0);
-        const mainScore = getScore(mainTeam);
-        const oppScore = getScore(oppTeam);
-        
-        const dt = new Date(game.date);
-        return {
-          date: `${String(dt.getDate()).padStart(2, '0')}/${String(dt.getMonth() + 1).padStart(2, '0')}`,
-          opponent: oppTeam.team.abbreviation,
-          result: mainTeam.winner ? 'V' : 'D',
-          score: `${Math.max(mainScore, oppScore)}-${Math.min(mainScore, oppScore)}`
-        };
-      });
-
-      // ... [Segue o código de injeção no Supabase]
-
-
-      const { data, error } = await supabase
-        .from('teams')
-        .update({ record: last5, updated_at: new Date().toISOString() }) 
-        .eq('name', fullName)
-        .select();
-
-      if (error) {
-        console.error(`❌ Fissura ao injetar ${fullName}:`, error.message);
-        errorCount++;
-      } else if (data && data.length > 0) {
-        console.log(`✅ ${fullName}: Matriz temporal atualizada.`);
-        successCount++;
-      }
+      if (success) successCount++;
+      else errorCount++;
+    } catch (err) {
+      console.error(`❌ Erro ao processar ${fullName}: ${err.message}`);
+      errorCount++;
     }
-    console.log(`\n🏁 Ciclo encerrado: ${successCount} atualizados.`);
-  } catch (error) {
-    console.error('❌ Colapso termodinâmico:', error);
-    process.exit(1);
+
+    // 🛡️ Dissipador térmico: evita rate limit da ESPN
+    await sleep(RATE_LIMIT_MS);
   }
+
+  console.log(`\n🏁 Ciclo encerrado: ${successCount} atualizados, ${errorCount} falhas.`);
+
+  if (errorCount > 0) process.exit(1);
 }
-updateTeams();
+
+updateTeams().catch((err) => {
+  console.error('❌ Colapso termodinâmico:', err);
+  process.exit(1);
+});
