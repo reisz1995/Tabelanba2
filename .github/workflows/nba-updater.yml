@@ -3,25 +3,24 @@ name: Update NBA Stats
 on:
   schedule:
     - cron: '0 11 * * *'
-  workflow_dispatch: # Botão manual
+  workflow_dispatch:
 
 jobs:
   update-stats:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      
+
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: '20' # <--- MUDAMOS DE 18 PARA 20 AQUI
-          
+          node-version: '20'
+
       - name: Install dependencies
-        run: npm install @supabase/supabase-js
+        run: npm install @supabase/supabase-js ws
 
       - name: Run Update Script
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        # Adicione a flag --experimental-modules para garantir compatibilidade
         run: node scripts/update-nba-stats.js
