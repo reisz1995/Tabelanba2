@@ -1,16 +1,30 @@
-name: OpenCode Sync
+name: Import NBA Players
 
 on:
-  push:
-    branches: [ "main" ]
+  schedule:
+    - cron: "0 8 * * *" # Todo dia às 08:00 UTC
+  workflow_dispatch:     # Permite trigger manual
 
 jobs:
-  opencode:
+  import-players:
+    name: Importar Jogadores via ESPN Core API
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Run OpenCode
-        run: |
-          npm install
-          npm run opencode
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Executar importação de jogadores
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: node importPlayers.js
