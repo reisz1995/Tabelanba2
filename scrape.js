@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { createClient } from "@supabase/supabase-js";
+import ws from "ws";
 import * as cheerio from "cheerio";
 
 // -----------------------------------------------------------------------------
@@ -19,6 +20,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
     persistSession: false // Impede I/O desnecessário no disco do runner
   },
   realtime: {
+    transport: ws, // Compatibilidade com Node.js 20 sem WebSocket nativo
     enabled: false // Isola e desativa a tentativa de conexão WebSocket fatal
   }
 });
