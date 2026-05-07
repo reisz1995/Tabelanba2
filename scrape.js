@@ -13,11 +13,16 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
   process.exit(1);
 }
 
-// Supressão explícita de WebSockets e sessões para execução em CI/CD efêmero
+
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
-  auth: { persistSession: false },
-  realtime: { enabled: false }
+  auth: {
+    persistSession: false // Impede I/O desnecessário no disco do runner
+  },
+  realtime: {
+    enabled: false // Isola e desativa a tentativa de conexão WebSocket fatal
+  }
 });
+
 
 const ESPN_API = "https://site.web.api.espn.com/apis/v2/sports/basketball/nba/standings";
 const HOLLINGER_URL = "https://www.espn.com/nba/hollinger/teamstats/_/sort/paceFactor";
