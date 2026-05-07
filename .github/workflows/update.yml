@@ -8,7 +8,7 @@ on:
 jobs:
   update-nba:
     runs-on: ubuntu-latest
-
+    
     steps:
       - name: [SYS] Inicializar repositório local
         uses: actions/checkout@v4
@@ -17,7 +17,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm' # Habilita cache térmico de dependências
+          cache: npm
 
       - name: [NET] Injeção de dependências do vetor de scraping
         run: npm install cheerio @supabase/supabase-js dotenv
