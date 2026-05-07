@@ -1,4 +1,4 @@
-name: Atualizar Tabela NBA (Replicante Build)
+name: Atualizar tabela NBA
 
 on:
   schedule:
@@ -8,21 +8,20 @@ on:
 jobs:
   update-nba:
     runs-on: ubuntu-latest
-    
+
     steps:
-      - name: [SYS] Inicializar repositório local
+      - name: Checkout do repositório
         uses: actions/checkout@v4
 
-      - name: [SYS] Configurar ambiente de execução (Node.js v20)
+      - name: Configurar ambiente Node.js v20
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
 
-      - name: [NET] Injeção de dependências do vetor de scraping
+      - name: Injeção forçada de dependências
         run: npm install cheerio @supabase/supabase-js dotenv
 
-      - name: [EXEC] Rotina de extração e persistência na base de dados
+      - name: Executar rotina de extração e persistência
         run: node scrape.js
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
