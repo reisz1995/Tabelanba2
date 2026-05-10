@@ -1,9 +1,13 @@
 """
-NBA Scraper - Kimi/Replicante V7.0.3 (Motor de Análise Semântica NLP)
+NBA Scraper - Kimi/Replicante V7.1.0 (Motor de Análise Semântica NLP)
 Correcções e Optimizacões:
-  - [UPDATE] Motor Semântico: Lê o texto táctico para descobrir nomes reais em jogos de Playoffs ocultos (Winner of...).
-  - [FIX] Regex visual recalibrada para não destruir equipas com números (ex: 76ers).
-  - [FIX] Mapeamento de SQL persistido na estabilidade V7.0.1.
+  - [FIX] Bug crítico: fallback de data sem horário subtraía 1 dia indevidamente,
+    descartando todos os jogos cujo link não continha hora legível no texto.
+    Agora a data do URL é tratada directamente como data BRT (já está em hora local).
+  - [FIX] Lógica ET→BRT reescrita com conversão real via zoneinfo, eliminando
+    aritmética manual propensa a erros em jogos após meia-noite.
+  - [CLEAN] Bloco if/else de datas colapsado e comentado para maior clareza.
+  - [UPDATE] Versão bumped para V7.1.0.
 """
 
 import os
@@ -23,7 +27,7 @@ from supabase import create_client, Client
 # ─── Logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] [NBA-V7.0.3] %(message)s",
+    format="%(asctime)s [%(levelname)s] [NBA-V7.1.0] %(message)s",
 )
 log = logging.getLogger(__name__)
 
@@ -39,11 +43,11 @@ def _require_env(name: str) -> str:
     return val
 
 class Config:
-    SUPABASE_URL     = _require_env("SUPABASE_URL")
-    SUPABASE_KEY     = _require_env("SUPABASE_SERVICE_KEY")
-    SCRAPINGANT_KEY  = os.environ.get("SCRAPINGANT_API_KEY", "")
-    BASE_URL         = "https://scores24.live"
-    PREDICTIONS_URL  = f"{BASE_URL}/pt/basketball/l-usa-nba"
+    SUPABASE_URL      = _require_env("SUPABASE_URL")
+    SUPABASE_KEY      = _require_env("SUPABASE_SERVICE_KEY")
+    SCRAPINGANT_KEY   = os.environ.get("SCRAPINGANT_API_KEY", "")
+    BASE_URL          = "https://scores24.live"
+    PREDICTIONS_URL   = f"{BASE_URL}/pt/basketball/l-usa-nba"
     CONCURRENCY_LIMIT = 3
 
 
@@ -78,16 +82,16 @@ class NetworkClient:
                     target = self._prepare_url(url, use_browser=use_browser)
                     log.info(f"Fetch: {url[:60]}... (browser={use_browser})")
                     resp = await self.client.get(target)
-                    
+
                     if resp.status_code == 409 and attempt < retries:
                         wait = 2 ** attempt
                         log.warning(f"409 retry em {wait}s...")
                         await asyncio.sleep(wait)
                         continue
-                        
+
                     resp.raise_for_status()
                     return resp.text
-                    
+
                 except httpx.HTTPStatusError as e:
                     if attempt == retries:
                         log.warning(f"Erro HTTP {e.response.status_code}")
@@ -114,7 +118,7 @@ class NetworkClient:
 
 
 # ─── Retry Helper ─────────────────────────────────────────────────────────────
-async def fetch_with_retry(net, url: str) -> Optional[str]:
+async def fetch_with_retry(net: NetworkClient, url: str) -> Optional[str]:
     log.info(f"[FETCH] {url[-60:]}")
     html = await net.fetch(url, use_browser=True)
     if html:
@@ -138,7 +142,7 @@ async def fetch_with_retry(net, url: str) -> Optional[str]:
 
 # ─── Extracção ────────────────────────────────────────────────────────────────
 class NBAExtractor:
-    
+
     @staticmethod
     def clean_team(name: str) -> str:
         return re.sub(r'\s*trends?$', '', name.split("#")[0], flags=re.I).strip()
@@ -185,16 +189,16 @@ class NBAExtractor:
         """
         if not game.tactical_prediction:
             return
-            
+
         anomalous_triggers = ["winner", "tbd", "game", "vencedor"]
         home_bad = any(t in game.home_team.lower() for t in anomalous_triggers)
         away_bad = any(t in game.away_team.lower() for t in anomalous_triggers)
-        
+
         if not (home_bad or away_bad):
             return
-            
+
         text_lower = game.tactical_prediction.lower()
-        
+
         nba_teams = [
             "atlanta hawks", "boston celtics", "brooklyn nets", "charlotte hornets",
             "chicago bulls", "cleveland cavaliers", "dallas mavericks", "denver nuggets",
@@ -205,15 +209,15 @@ class NBAExtractor:
             "phoenix suns", "portland trail blazers", "sacramento kings", "san antonio spurs",
             "toronto raptors", "utah jazz", "washington wizards"
         ]
-        
+
         found_teams = []
         for team in nba_teams:
             if team in text_lower:
                 found_teams.append(team.title())
-                
+
         # Deduplicação
         unique_teams = list(dict.fromkeys(found_teams))
-        
+
         if len(unique_teams) >= 2:
             if home_bad and not away_bad:
                 for t in unique_teams:
@@ -228,24 +232,52 @@ class NBAExtractor:
             elif home_bad and away_bad:
                 game.home_team = unique_teams[0]
                 game.away_team = unique_teams[1]
-                
+
             # Recalibração pós-substituição
             game.home_team_pt = self.translate_team(game.home_team)
             game.away_team_pt = self.translate_team(game.away_team)
             game.home_tri = self.get_tri_code(game.home_team)
             game.away_tri = self.get_tri_code(game.away_team)
-            
+
             log.info(f"  → Substituição Semântica Aplicada: {game.home_team} vs {game.away_team}")
+
+    @staticmethod
+    def _resolve_game_date_brt(url_date_obj, time_match) -> tuple:
+        """
+        V7.1.0: Resolução correcta de data/hora BRT a partir da data do URL e hora ET do texto.
+
+        O URL do scores24.live usa formato DD-MM-YYYY em hora local ET.
+        Quando o link contém horário explícito (ex: "19:30"), converte ET→BRT via zoneinfo.
+        Quando não contém horário, a data do URL é usada directamente como data BRT —
+        o fallback anterior de subtrair 1 dia era incorrecto e causava jogos descartados.
+
+        Retorna: (game_brt_date: date, game_brt_time: str)
+        """
+        if time_match:
+            h, m = map(int, time_match.group(1).split(':'))
+            # Constrói datetime ET com a data do URL e a hora extraída do texto
+            dt_et = datetime(
+                url_date_obj.year, url_date_obj.month, url_date_obj.day,
+                h, m, tzinfo=ET
+            )
+            # Converte para BRT via zoneinfo (lida automaticamente com DST)
+            dt_brt = dt_et.astimezone(BRT)
+            return dt_brt.date(), dt_brt.strftime("%H:%M")
+        else:
+            # Sem horário no texto: a data do URL já é a data local do jogo.
+            # [FIX V7.1.0] Removida a subtracção incorrecta de 1 dia que descartava
+            # jogos cujos links não tinham hora visível (ex: cards de playoffs).
+            return url_date_obj, "20:00"
 
     def extract_games_list(self, html: str, target_date: str) -> List[GameData]:
         soup = BeautifulSoup(html, "html.parser")
         games = []
-        
+
         pattern = re.compile(r"/pt/basketball/m-(\d{2}-\d{2}-\d{4})-([^/?#]+)")
         seen_slugs: set[str] = set()
 
         dt_target = datetime.strptime(target_date, "%Y-%m-%d").date()
-        
+
         for a in soup.find_all("a", href=True):
             href = a["href"]
             if "/m-" not in href:
@@ -256,42 +288,22 @@ class NBAExtractor:
                 continue
 
             url_date_str = match.group(1)
-            raw_slug = match.group(2)
+            raw_slug     = match.group(2)
             url_date_obj = datetime.strptime(url_date_str, "%d-%m-%Y").date()
-            
-            node_text = a.get_text(separator="|", strip=True)
+
+            node_text       = a.get_text(separator="|", strip=True)
             node_text_lower = node_text.lower()
-            time_match = re.search(r"(\d{2}:\d{2})", node_text_lower)
-            
-            if time_match:
-                h, m = map(int, time_match.group(1).split(':'))
-                et_hour = h
-                
-                if et_hour + 4 >= 24:
-                    game_et_date = url_date_obj - timedelta(days=1)
-                else:
-                    game_et_date = url_date_obj
-                    
-                brt_h = (et_hour + 1) % 24
-                game_brt_time = f"{brt_h:02d}:{m:02d}"
-                
-                if brt_h < et_hour:
-                    game_brt_date = game_et_date + timedelta(days=1)
-                else:
-                    game_brt_date = game_et_date
-            else:
-                game_brt_date = url_date_obj - timedelta(days=1)
-                game_brt_time = "20:00"
+            time_match      = re.search(r"(\d{2}:\d{2})", node_text_lower)
+
+            # V7.1.0: data/hora BRT resolvida por método dedicado
+            game_brt_date, game_brt_time = self._resolve_game_date_brt(url_date_obj, time_match)
 
             if game_brt_date != dt_target:
-                if not time_match and url_date_obj == dt_target:
-                    pass
-                else:
-                    continue
+                continue
 
             clean_teams = raw_slug.replace("-prediction", "")
-            slug_clean = f"m-{url_date_str}-{clean_teams}"
-            
+            slug_clean  = f"m-{url_date_str}-{clean_teams}"
+
             if slug_clean in seen_slugs:
                 continue
             seen_slugs.add(slug_clean)
@@ -300,15 +312,15 @@ class NBAExtractor:
 
             imgs = a.find_all("img")
             alts = [img.get("alt", "").strip() for img in imgs if img.get("alt")]
-            
+
             if len(alts) >= 2:
                 home, away = self.clean_team(alts[0]), self.clean_team(alts[1])
             else:
                 raw_fragments = node_text.split("|")
-                valid_names = []
+                valid_names   = []
                 for t in raw_fragments:
                     t_clean = t.strip()
-                    # V7.0.3: Tolerância estrita para preservar nomes com números (ex: 76ers)
+                    # Tolerância estrita para preservar nomes com números (ex: 76ers)
                     if re.match(r'^\d{2}:\d{2}$', t_clean) or re.match(r'^\d{1,3}%$', t_clean):
                         continue
                     if re.search(r'previsão|prognóstico|nossa escolha', t_clean, flags=re.IGNORECASE):
@@ -338,93 +350,93 @@ class NBAExtractor:
                 confidence_pct=int(conf_match.group(1)) if conf_match else None,
             ))
 
-        log.info(f"  → Matriz Matemática (V7.0.3): {len(games)} partidas isoladas.")
+        log.info(f"  → Matriz Matemática (V7.1.0): {len(games)} partidas isoladas.")
         return games
 
     def extract_full_prediction(self, html: str, game: GameData) -> None:
         if not html:
             return
-            
+
         soup = BeautifulSoup(html, "html.parser")
         game.tactical_prediction = self._extract_text_v3(soup)
         log.info(f"  → Texto extraído: {len(game.tactical_prediction) if game.tactical_prediction else 0} chars")
-        
+
         # Activa o Scanner Semântico para corrigir nomes TBD via leitura de artigo
         self._resolve_anomalous_teams(game)
 
     def _process_text_container(self, container, min_length=150) -> Optional[str]:
         if not container:
             return None
-            
+
         for elem in container.find_all(["button", "script", "style", "nav", "footer", "aside", "table", "form", "iframe", "ul", "ol", "a"]):
             try:
                 elem.decompose()
-            except:
+            except Exception:
                 pass
-        
+
         sections = []
         last_text = ""
         capture_immunity = False
-        
+
         blacklist = {
-            "registre", "bônus", "clique aqui", "cadastre-se", "promoção", 
+            "registre", "bônus", "clique aqui", "cadastre-se", "promoção",
             "termos e condições", "lucro garantido", "telegram", "whatsapp",
             "1xbit", "bet365", "betano", "1xbet", "pin-up",
             "palpite pago", "vip", "cookie"
         }
-        
+
         stop_triggers = [
-            "esta previsão vai ser correta", "total de votos", "bónus", "bônus", 
-            "odds para o jogo", "posição na tabela", "estatísticas h2h", 
+            "esta previsão vai ser correta", "total de votos", "bónus", "bônus",
+            "odds para o jogo", "posição na tabela", "estatísticas h2h",
             "últimos jogos", "classificação", "outras previsões", "calcule seus",
             "melhores odds", "welcome bonus"
         ]
-        
+
         for elem in container.find_all(["p", "h2", "h3", "div", "span"]):
-            
+
             if elem.name in ["div", "span"] and elem.find(["p", "h2", "h3", "div"]):
                 continue
-                
+
             text = elem.get_text(separator=" ", strip=True)
-            if not text: 
+            if not text:
                 continue
-                
+
             text_lower = text.lower()
-            is_header = elem.name in ["h2", "h3"]
-            
+            is_header  = elem.name in ["h2", "h3"]
+
             if any(stop in text_lower for stop in stop_triggers):
                 capture_immunity = False
                 continue
-                
+
             if is_header and any(trigger in text_lower for trigger in ["previsão da redação", "nossa escolha", "prognóstico", "palpite"]):
                 capture_immunity = True
                 sections.append(f"\n{text}")
                 last_text = text
                 continue
-                
+
             if not capture_immunity and not is_header:
-                if len(text) < 45: 
+                if len(text) < 45:
                     continue
                 if any(b in text_lower for b in blacklist):
                     continue
                 num_count = sum(c.isdigit() for c in text)
-                density = num_count / len(text) if len(text) > 0 else 0
-                if density > 0.12: 
+                density   = num_count / len(text) if len(text) > 0 else 0
+                if density > 0.12:
                     continue
-            
+
             if text == last_text or text in sections:
                 continue
-                
+
             last_text = text
-            
+
             if is_header and not capture_immunity:
                 sections.append(f"\n{text}")
             else:
                 sections.append(text)
-        
+
         result = "\n\n".join(sections).strip()
         result = re.sub(r'\n{3,}', '\n\n', result)
-        
+
         return result if len(result) >= min_length else None
 
     def _extract_text_v3(self, soup: BeautifulSoup) -> Optional[str]:
@@ -452,34 +464,34 @@ class DatabaseManager:
         return {
             row["slug"]: {
                 "game_date": row.get("game_date"),
-                "has_text": bool(row.get("tactical_prediction")),
+                "has_text":  bool(row.get("tactical_prediction")),
             }
             for row in res.data
         }
 
     def upsert_games(self, games: List[GameData]):
-        seen = set()
+        seen   = set()
         unique = []
         for g in games:
             if g.slug not in seen:
                 seen.add(g.slug)
                 unique.append(g)
-        
+
         if not unique:
             log.info("Nenhum registo persistente válido.")
             return
-        
+
         rows = []
         for g in unique:
             row: Dict[str, Any] = {}
             for field in self.target_columns:
                 row[field] = getattr(g, field, None)
-            
+
             if not row.get("tactical_prediction"):
                 log.warning(f"  → {g.slug}: SEM tactical_prediction processada.")
-            
+
             rows.append(row)
-        
+
         try:
             self.sb.table("nba_games_schedule").upsert(rows, on_conflict="slug").execute()
             for r in rows:
@@ -492,7 +504,7 @@ class DatabaseManager:
 
 # ─── Orquestrador ─────────────────────────────────────────────────────────────
 async def main():
-    log.info("═══ Motor Activo: Kimi/Replicante V7.0.3 (Análise Semântica NLP) ═══")
+    log.info("═══ Motor Activo: Kimi/Replicante V7.1.0 (Análise Semântica NLP) ═══")
 
     if not Config.SCRAPINGANT_KEY:
         log.error("SCRAPINGANT_API_KEY crítica não fornecida.")
@@ -500,7 +512,7 @@ async def main():
 
     net = NetworkClient()
     ext = NBAExtractor()
-    db = DatabaseManager()
+    db  = DatabaseManager()
 
     try:
         html_list = await fetch_with_retry(net, Config.PREDICTIONS_URL)
@@ -518,18 +530,18 @@ async def main():
         cache = db.get_cached()
 
         async def process(game: GameData) -> GameData:
-            cached = cache.get(game.slug, {})
+            cached       = cache.get(game.slug, {})
             needs_update = not cached.get("has_text")
-            
+
             if not needs_update and cached.get("game_date") == game.game_date:
                 log.info(f"[{game.away_tri} @ {game.home_tri}] → Ciclo ignorado. Cache preenchido.")
                 return game
 
             pred_url = f"{game.source_url}-prediction"
             log.info(f"[{game.away_tri} @ {game.home_tri}] → Executando injecção de rede para vector táctico...")
-            
+
             html = await fetch_with_retry(net, pred_url)
-            
+
             if html:
                 ext.extract_full_prediction(html, game)
                 if not game.tactical_prediction:
@@ -560,7 +572,6 @@ async def main():
             db.upsert_games(valid)
 
         with_text = sum(1 for g in valid if g.tactical_prediction)
-        
         log.info(f"═══ Auditoria de Saída: {len(valid)} nodes | Vectores Limpos: {with_text} ═══")
 
     finally:
