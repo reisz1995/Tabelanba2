@@ -71,8 +71,13 @@ class GameData(BaseModel):
 
 # ─── Rede ─────────────────────────────────────────────────────────────────────
 class NetworkClient:
+    # Delay (ms) aguardado após page load para JS renderizar conteúdo dinâmico.
+    # 5000ms cobre a maioria dos casos; escalável se necessário.
+    BROWSER_WAIT_MS = 5000
+
     def __init__(self):
-        self.client    = httpx.AsyncClient(follow_redirects=True, timeout=60)
+        # Timeout alargado para acomodar browser_wait_delay (5s) + latência ScrapingAnt
+        self.client    = httpx.AsyncClient(follow_redirects=True, timeout=120)
         self.semaphore = asyncio.Semaphore(Config.CONCURRENCY_LIMIT)
 
     async def fetch(self, url: str, retries: int = 2, use_browser: bool = False) -> Optional[str]:
@@ -113,9 +118,9 @@ class NetworkClient:
             f"proxy_country=us&browser={browser_param}"
         )
         if use_browser:
-            # Aguarda até existir pelo menos um link de jogo (/m-) no DOM, ou timeout ScrapingAnt
-            selector = quote("a[href*='/m-']", safe="")
-            base += f"&wait_for_selector={selector}"
+            # Delay simples pós-load para aguardar renderização JS do conteúdo dinâmico.
+            # Substitui wait_for_selector que causava timeout na API.
+            base += f"&browser_wait_delay={self.BROWSER_WAIT_MS}"
         return base
 
     async def close(self):
