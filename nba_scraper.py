@@ -112,15 +112,22 @@ class NetworkClient:
             return url
         encoded = quote(url, safe="")
         browser_param = "true" if use_browser else "false"
-        base = (
-            f"https://api.scrapingant.com/v2/general?"
-            f"url={encoded}&x-api-key={Config.SCRAPINGANT_KEY}&"
-            f"proxy_country=us&browser={browser_param}"
-        )
+
         if use_browser:
-            # Delay simples pós-load para aguardar renderização JS do conteúdo dinâmico.
-            # Substitui wait_for_selector que causava timeout na API.
-            base += f"&browser_wait_delay={self.BROWSER_WAIT_MS}"
+            # proxy_type=residential contorna o Cloudflare "Just a moment..." challenge.
+            # Proxies residenciais têm reputação de IP real e passam fingerprinting TLS.
+            base = (
+                f"https://api.scrapingant.com/v2/general?"
+                f"url={encoded}&x-api-key={Config.SCRAPINGANT_KEY}&"
+                f"browser=true&proxy_type=residential&"
+                f"browser_wait_delay={self.BROWSER_WAIT_MS}"
+            )
+        else:
+            base = (
+                f"https://api.scrapingant.com/v2/general?"
+                f"url={encoded}&x-api-key={Config.SCRAPINGANT_KEY}&"
+                f"proxy_country=us&browser=false"
+            )
         return base
 
     async def close(self):
