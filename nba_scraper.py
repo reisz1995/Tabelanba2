@@ -278,6 +278,21 @@ class NBAExtractor:
 
         dt_target = datetime.strptime(target_date, "%Y-%m-%d").date()
 
+        # ── DEBUG V7.1.1: inspecção da estrutura HTML recebida ────────────────
+        all_anchors = soup.find_all("a", href=True)
+        log.info(f"[DEBUG] Total <a href> encontrados na página: {len(all_anchors)}")
+
+        basketball_links = [a["href"] for a in all_anchors if "/basketball/" in a["href"]]
+        log.info(f"[DEBUG] Links com '/basketball/': {len(basketball_links)}")
+        for lnk in basketball_links[:20]:
+            log.info(f"[DEBUG]   href={lnk}")
+
+        m_links = [h for h in basketball_links if "/m-" in h]
+        log.info(f"[DEBUG] Links com '/m-' (padrão de jogo): {len(m_links)}")
+        for lnk in m_links[:20]:
+            log.info(f"[DEBUG]   href={lnk}")
+        # ── FIM DEBUG ─────────────────────────────────────────────────────────
+
         for a in soup.find_all("a", href=True):
             href = a["href"]
             if "/m-" not in href:
