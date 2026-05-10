@@ -261,30 +261,26 @@ class NBAExtractor:
     @staticmethod
     def _resolve_game_date_brt(url_date_obj, time_match) -> tuple:
         """
-        V7.1.0: Resolução correcta de data/hora BRT a partir da data do URL e hora ET do texto.
+        V7.1.1: Resolução correcta de data/hora BRT.
 
-        O URL do scores24.live usa formato DD-MM-YYYY em hora local ET.
-        Quando o link contém horário explícito (ex: "19:30"), converte ET→BRT via zoneinfo.
-        Quando não contém horário, a data do URL é usada directamente como data BRT —
-        o fallback anterior de subtrair 1 dia era incorrecto e causava jogos descartados.
+        O URL do scores24.live usa formato DD-MM-YYYY em hora ET.
+        Com hora: converte ET→BRT via zoneinfo (pode resultar no dia seguinte).
+        Sem hora: data do URL é ET — jogo pode cair no mesmo dia ou no seguinte em BRT.
+                  Retorna is_estimated=True para que o caller aceite ambos os dias.
 
-        Retorna: (game_brt_date: date, game_brt_time: str)
+        Retorna: (game_brt_date: date, game_brt_time: str, is_estimated: bool)
         """
         if time_match:
             h, m = map(int, time_match.group(1).split(':'))
-            # Constrói datetime ET com a data do URL e a hora extraída do texto
             dt_et = datetime(
                 url_date_obj.year, url_date_obj.month, url_date_obj.day,
                 h, m, tzinfo=ET
             )
-            # Converte para BRT via zoneinfo (lida automaticamente com DST)
             dt_brt = dt_et.astimezone(BRT)
-            return dt_brt.date(), dt_brt.strftime("%H:%M")
+            return dt_brt.date(), dt_brt.strftime("%H:%M"), False
         else:
-            # Sem horário no texto: a data do URL já é a data local do jogo.
-            # [FIX V7.1.0] Removida a subtracção incorrecta de 1 dia que descartava
-            # jogos cujos links não tinham hora visível (ex: cards de playoffs).
-            return url_date_obj, "20:00"
+            # Sem hora: data ET do URL — aceitar url_date e url_date+1 como válidos.
+            return url_date_obj, "20:00", True
 
     def extract_games_list(self, html: str, target_date: str) -> List[GameData]:
         soup = BeautifulSoup(html, "html.parser")
@@ -335,10 +331,13 @@ class NBAExtractor:
             node_text_lower = node_text.lower()
             time_match      = re.search(r"(\d{2}:\d{2})", node_text_lower)
 
-            # V7.1.0: data/hora BRT resolvida por método dedicado
-            game_brt_date, game_brt_time = self._resolve_game_date_brt(url_date_obj, time_match)
+            # V7.1.1: data/hora BRT resolvida por método dedicado
+            game_brt_date, game_brt_time, is_estimated = self._resolve_game_date_brt(url_date_obj, time_match)
 
-            if game_brt_date != dt_target:
+            # Quando é estimada (sem hora ET), aceitar também url_date+1 em BRT
+            brt_date_plus1 = url_date_obj + timedelta(days=1)
+            date_match = (game_brt_date == dt_target) or (is_estimated and brt_date_plus1 == dt_target)
+            if not date_match:
                 continue
 
             clean_teams = raw_slug.replace("-prediction", "")
@@ -390,7 +389,7 @@ class NBAExtractor:
                 confidence_pct=int(conf_match.group(1)) if conf_match else None,
             ))
 
-        log.info(f"  → Matriz Matemática (V7.1.0): {len(games)} partidas isoladas.")
+        log.info(f"  → Matriz Matemática (V7.1.1): {len(games)} partidas isoladas.")
         return games
 
     def extract_full_prediction(self, html: str, game: GameData) -> None:
