@@ -107,11 +107,16 @@ class NetworkClient:
             return url
         encoded = quote(url, safe="")
         browser_param = "true" if use_browser else "false"
-        return (
+        base = (
             f"https://api.scrapingant.com/v2/general?"
             f"url={encoded}&x-api-key={Config.SCRAPINGANT_KEY}&"
             f"proxy_country=us&browser={browser_param}"
         )
+        if use_browser:
+            # Aguarda até existir pelo menos um link de jogo (/m-) no DOM, ou timeout ScrapingAnt
+            selector = quote("a[href*='/m-']", safe="")
+            base += f"&wait_for_selector={selector}"
+        return base
 
     async def close(self):
         await self.client.aclose()
@@ -291,6 +296,14 @@ class NBAExtractor:
         log.info(f"[DEBUG] Links com '/m-' (padrão de jogo): {len(m_links)}")
         for lnk in m_links[:20]:
             log.info(f"[DEBUG]   href={lnk}")
+
+        # Dump HTML raw para inspecção quando página chega vazia
+        if len(all_anchors) <= 5:
+            dump_path = "/tmp/scores24_debug.html"
+            with open(dump_path, "w", encoding="utf-8") as f:
+                f.write(html)
+            log.warning(f"[DEBUG] Página suspeita — HTML raw salvo em {dump_path} ({len(html)} chars)")
+            log.warning(f"[DEBUG] Primeiros 500 chars: {html[:500]}")
         # ── FIM DEBUG ─────────────────────────────────────────────────────────
 
         for a in soup.find_all("a", href=True):
