@@ -2,6 +2,7 @@
 """
 NBA Injuries Sync Script
 Busca lesões na ESPN e sincroniza com o Supabase (Limpa antigos -> Insere novos)
+Também atualiza o arquivo local nba_injuries.json como cache/backup.
 """
 
 import os
@@ -9,14 +10,21 @@ import requests
 import json
 from datetime import datetime
 from typing import List, Dict, Any
+from dotenv import load_dotenv
 from supabase import create_client, Client
+
+load_dotenv()
 
 # --- CONFIGURAÇÃO ---
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY") # Use a Service Key para poder deletar sem restrições de RLS se necessário
+SUPABASE_KEY = (
+    os.environ.get("SUPABASE_SERVICE_KEY")
+    or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    or os.environ.get("SUPABASE_KEY")
+)
 
 if not all([SUPABASE_URL, SUPABASE_KEY]):
-    print("❌ Erro: Defina as variáveis de ambiente SUPABASE_URL e SUPABASE_SERVICE_KEY")
+    print("❌ Erro: Defina as variáveis de ambiente SUPABASE_URL e SUPABASE_SERVICE_KEY (ou SUPABASE_SERVICE_ROLE_KEY)")
     exit(1)
 
 # Inicializa o cliente Supabase
@@ -25,15 +33,15 @@ TABLE_NAME = "nba_injured_players"
 
 class NBAInjuriesAPI:
     """Classe para buscar dados de lesões da NBA"""
-    
+
     BASE_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba"
-    
+
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (compatible; NBA-Injuries-Bot/1.0)'
         })
-    
+
     def get_all_teams(self) -> List[Dict[str, Any]]:
         """Busca lista de times"""
         url = f"{self.BASE_URL}/teams"
@@ -41,7 +49,7 @@ class NBAInjuriesAPI:
             response = self.session.get(url, timeout=10)
             response.raise_for_status()
             data = response.json()
-            
+
             teams = []
             for sport in data.get('sports', []):
                 for league in sport.get('leagues', []):
@@ -72,14 +80,14 @@ class NBAInjuriesAPI:
         injuries = athlete.get('injuries', [])
         if not injuries:
             return None
-        
-        injury = injuries[0] # Pega a lesão principal
-        
+
+        injury = injuries[0]  # Pega a lesão principal
+
         return {
-            'player_id': athlete.get('id'),
+            'player_id': str(athlete.get('id')),
             'player_name': athlete.get('displayName'),
             'player_short_name': athlete.get('shortName'),
-            'team_id': team_info.get('id'),
+            'team_id': str(team_info.get('id')),
             'team_name': team_info.get('name'),
             'team_abbreviation': team_info.get('abbreviation'),
             'position': athlete.get('position', {}).get('abbreviation'),
@@ -87,8 +95,8 @@ class NBAInjuriesAPI:
             'headshot_url': athlete.get('headshot', {}).get('href'),
             'injury_status': injury.get('status'),
             'injury_type': injury.get('type'),
-            'injury_details': injury.get('details'), # Ex: "Out"
-            'injury_description': injury.get('longComment'), # Descrição completa
+            'injury_details': injury.get('details'),  # Ex: "Out"
+            'injury_description': injury.get('longComment'),  # Descrição completa
             'injury_date': injury.get('date'),
             'last_updated': datetime.now().isoformat(),
             'espn_player_url': f"https://www.espn.com/nba/player/_/id/{athlete.get('id')}"
@@ -99,25 +107,36 @@ class NBAInjuriesAPI:
         print("🏀 Iniciando varredura da NBA...")
         teams = self.get_all_teams()
         print(f"✅ {len(teams)} times detectados.")
-        
+
         all_injuries = []
-        
+
         for idx, team in enumerate(teams, 1):
             print(f"\r⏳ Processando {team['name']} ({idx}/{len(teams)})...", end="", flush=True)
             roster = self.get_team_roster(team['id'])
-            
+
             for athlete in roster:
                 injury_data = self.extract_injury_data(athlete, team)
                 if injury_data:
                     all_injuries.append(injury_data)
-        
+
         print("\n✅ Coleta finalizada.")
         return all_injuries
+
+
+def save_local_backup(data: List[Dict[str, Any]], filepath: str = "nba_injuries.json"):
+    """Salva backup local para uso offline ou fallback."""
+    try:
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        print(f"💾 Backup local sincronizado em {filepath} ({len(data)} registros).")
+    except Exception as e:
+        print(f"⚠️ Aviso ao salvar {filepath}: {e}")
+
 
 def update_supabase(data: List[Dict[str, Any]]):
     """
     1. Limpa a tabela inteira (apaga dados antigos)
-    2. Insere os novos dados
+    2. Insere os novos dados em lotes
     """
     if not data:
         print("⚠️ Nenhum dado de lesão encontrado. O banco não será alterado.")
@@ -127,34 +146,38 @@ def update_supabase(data: List[Dict[str, Any]]):
 
     try:
         # 1. LIMPEZA (DELETE ALL)
-        # Usamos neq("id", 0) assumindo que IDs são positivos, ou seja, apaga tudo.
         print("🧹 Limpando dados antigos...")
         supabase.table(TABLE_NAME).delete().neq("player_id", "0").execute()
-        
-        # 2. INSERÇÃO (BULK INSERT)
+
+        # 2. INSERÇÃO EM LOTES (BULK INSERT)
         print("💾 Inserindo dados atualizados...")
-        # O Supabase aceita insert em lote (lista de dicionários)
-        response = supabase.table(TABLE_NAME).insert(data).execute()
-        
-        print("✅ Sucesso! Tabela atualizada.")
-        
+        batch_size = 50
+        for i in range(0, len(data), batch_size):
+            batch = data[i:i + batch_size]
+            supabase.table(TABLE_NAME).insert(batch).execute()
+
+        print("✅ Sucesso! Tabela Supabase 'nba_injured_players' atualizada.")
+
     except Exception as e:
         print(f"❌ Erro ao atualizar Supabase: {e}")
 
+
 def main():
     api = NBAInjuriesAPI()
-    
+
     # 1. Busca os dados frescos da API
     injuries_list = api.fetch_all_injuries()
-    
+
     # 2. Exibe resumo no console
     print(f"\n📊 Total de lesionados: {len(injuries_list)}")
-    
-    # 3. Envia para o Supabase (Limpa Velhos -> Põe Novos)
+
+    # 3. Envia para o Supabase e atualiza backup local
     if injuries_list:
+        save_local_backup(injuries_list)
         update_supabase(injuries_list)
     else:
         print("Nenhuma lesão encontrada hoje.")
+
 
 if __name__ == "__main__":
     main()

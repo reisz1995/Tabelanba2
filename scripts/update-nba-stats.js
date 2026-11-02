@@ -1,10 +1,11 @@
+import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
 import ws from 'ws';
 
 // ─── Configuração ────────────────────────────────────────────────────────────
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY;
 const ESPN_BASE    = 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba';
 const RATE_LIMIT_MS = 800;
 

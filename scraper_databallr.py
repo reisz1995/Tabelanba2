@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Módulo Extrator NBA [Databallr -> Supabase -> Google AI Studio]
-Versão: 5.5 (Deep-Search, Key Normalization, Extended Tensors, Full Team Names & Season Scope)
+Versão: 5.6 (Multi-Period: last_14_days + this_year, Deep-Search, Key Normalization, Extended Tensors & Full Team Names)
 Estética: Replicante / Architect-Engineer
 """
 
@@ -13,7 +13,10 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import pandas as pd
+from dotenv import load_dotenv
 from supabase import create_client, Client
+
+load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Configuração de Telemetria HUD
@@ -63,20 +66,19 @@ TEAM_NAME_MAP: dict[str, str] = {
 
 
 class DataballrScraper:
-    def __init__(self, season: str = "2025-26"):
-        # [ATUALIZADO] Foco na temporada completa (this_year)
-        self.period = "season"
-        self.db_period_label = "this_year"
-        self.api_date_window = "this_year"
-
+    def __init__(self, season: str = "2025-26", periods: list[str] = None):
         season_env = os.getenv("DATABALLR_SEASON", season)
         self.api_season = "20" + season_env.split('-')[1] if '-' in season_env else "2026"
 
-        # O endpoint agora injetará 'this_year' via self.api_date_window
-        self.api_url = (
-            f"https://api.databallr.com/api/supabase/team_stats"
-            f"?season={self.api_season}&leverage=all&date_window={self.api_date_window}"
-        )
+        # [MULTI-PERÍODO] Garante suporte a last_14_days (usado no predict_games e testes)
+        # e this_year (visão acumulada da temporada).
+        env_period = os.getenv("DATABALLR_PERIOD")
+        if periods:
+            self.periods = periods
+        elif env_period:
+            self.periods = [p.strip() for p in env_period.split(",") if p.strip()]
+        else:
+            self.periods = ["last_14_days", "this_year"]
 
         now_utc = datetime.now(timezone.utc)
         self.current_date = now_utc.date().isoformat()
@@ -101,7 +103,11 @@ class DataballrScraper:
         })
 
         url = os.environ.get("SUPABASE_URL")
-        key = os.environ.get("SUPABASE_SERVICE_KEY") or os.environ.get("SUPABASE_KEY")
+        key = (
+            os.environ.get("SUPABASE_SERVICE_KEY")
+            or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+            or os.environ.get("SUPABASE_KEY")
+        )
 
         if not url or not key:
             raise EnvironmentError("[SYS-ERR] Credenciais Supabase não detectadas.")
@@ -118,14 +124,18 @@ class DataballrScraper:
         return TEAM_NAME_MAP.get(abbr.upper(), fallback)
 
     # -----------------------------------------------------------------------
-    # Motor de extração
+    # Motor de extração por período
     # -----------------------------------------------------------------------
-    def fetch_data(self) -> pd.DataFrame:
+    def fetch_data_for_period(self, period_label: str) -> pd.DataFrame:
         """Motor Matemático: Extração via API + Heurística de Profundidade + Normalização."""
-        logger.info(f"[NET-FETCH] Link Direto Estabelecido: {self.api_url}")
+        api_url = (
+            f"https://api.databallr.com/api/supabase/team_stats"
+            f"?season={self.api_season}&leverage=all&date_window={period_label}"
+        )
+        logger.info(f"[NET-FETCH] Link Direto ({period_label}): {api_url}")
 
         try:
-            response = self.session.get(self.api_url, timeout=20)
+            response = self.session.get(api_url, timeout=20)
             response.raise_for_status()
             payload = response.json()
 
@@ -148,16 +158,11 @@ class DataballrScraper:
 
             if not teams_raw:
                 debug_info = {k: type(v).__name__ for k, v in payload.items()}
-                logger.error(f"[VAL-ERR] Matriz nula. Estrutura de dados recebida: {debug_info}")
-                if 'team' in payload and isinstance(payload['team'], list) and len(payload['team']) > 0:
-                    logger.error(
-                        f"[VAL-DEBUG] Chaves do primeiro item de 'team': "
-                        f"{list(payload['team'][0].keys())}"
-                    )
+                logger.error(f"[VAL-ERR] Matriz nula para {period_label}. Estrutura: {debug_info}")
                 return pd.DataFrame()
 
             logger.info(
-                f"[SYS-OP] Matriz localizada no nó '{target_key}' com {len(teams_raw)} vetores."
+                f"[SYS-OP] Matriz '{period_label}' localizada no nó '{target_key}' com {len(teams_raw)} vetores."
             )
 
             # Função de normalização de tensores (Ignora Case e Underscores)
@@ -207,8 +212,6 @@ class DataballrScraper:
                     or t.get('shortname', 'NBA')
                 )
 
-                # [NOVO] Resolve o nome completo via TEAM_NAME_MAP;
-                # usa o campo 'name' da API como fallback para times desconhecidos.
                 api_name  = t.get('name') or t.get('teamname', 'Unknown')
                 team_name = TEAM_NAME_MAP.get(str(team_abbr).upper(), api_name)
 
@@ -228,46 +231,62 @@ class DataballrScraper:
                     'orb':               round(orb * 100, 1),
                     'drb':               round(drb * 100, 1),
                     'record_date':       self.current_date,
-                    'period':            self.db_period_label,
+                    'period':            period_label,
                     'created_at':        self.current_timestamp,
                 })
 
             df = pd.DataFrame(teams_data)
             logger.info(
-                f"[VAL-OK] {len(df)} vetores processados. "
+                f"[VAL-OK] {period_label}: {len(df)} vetores processados. "
                 f"Net Rating Médio: {df['net_rating'].mean():.2f}"
             )
             return df
 
         except Exception as e:
-            logger.error(f"[FATAL] Falha de processamento: {str(e)}")
+            logger.error(f"[FATAL] Falha de processamento para {period_label}: {str(e)}")
             return pd.DataFrame()
 
     # -----------------------------------------------------------------------
     # Pipeline de persistência
     # -----------------------------------------------------------------------
     def run(self):
-        """Pipeline Atômico de Persistência."""
-        summary = {'status': 'FAILED', 'execution_date': self.current_timestamp}
+        """Pipeline Atômico de Persistência com suporte multi-período."""
+        summary = {
+            'status': 'FAILED',
+            'execution_date': self.current_timestamp,
+            'periods_processed': {}
+        }
+        total_records = 0
+
         try:
-            df = self.fetch_data()
-            if df.empty:
-                raise ValueError("Vetor de dados nulo. Heurística e Normalização falharam.")
+            for period in self.periods:
+                logger.info(f"🚀 Iniciando ciclo para período: '{period}'...")
+                df = self.fetch_data_for_period(period)
 
-            records = df.to_dict('records')
+                if df.empty:
+                    logger.warning(f"⚠️ Vetor nulo para período '{period}'. Pulando...")
+                    continue
 
-            # [OTIMIZAÇÃO] Resolução de conflitos baseada em (team_id, period)
-            self.supabase.table('databallr_team_stats').upsert(
-                records, on_conflict='team_id,period'
-            ).execute()
+                records = df.to_dict('records')
 
-            summary.update({
-                'status':          'SUCCESS',
-                'teams_processed': len(df),
-                'api_endpoint':    self.api_url,
-                'avg_net_rating':  round(float(df['net_rating'].mean()), 2),
-            })
-            logger.info("[SYS-OP] Sincronia concluída. Banco Supabase atualizado e livre de duplicatas.")
+                # [OTIMIZAÇÃO] Resolução de conflitos baseada em (team_id, period)
+                self.supabase.table('databallr_team_stats').upsert(
+                    records, on_conflict='team_id,period'
+                ).execute()
+
+                summary['periods_processed'][period] = {
+                    'teams_processed': len(df),
+                    'avg_net_rating': round(float(df['net_rating'].mean()), 2)
+                }
+                total_records += len(df)
+                logger.info(f"[SYS-OP] Período '{period}' sincronizado ({len(df)} equipes).")
+
+            if total_records == 0:
+                raise ValueError("Nenhum registro extraído em nenhum dos períodos.")
+
+            summary['status'] = 'SUCCESS'
+            summary['total_records'] = total_records
+            logger.info(f"[SYS-OP] Sincronia concluída. {total_records} registros totais atualizados.")
 
         except Exception as e:
             summary['error'] = str(e)

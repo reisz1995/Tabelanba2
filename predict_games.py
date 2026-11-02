@@ -7,16 +7,23 @@ from datetime import datetime, timedelta
 import pytz
 from supabase import create_client
 from groq import Groq
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ==========================================
 # 1. INICIALIZAÇÃO DE INFRAESTRUTURA
 # ==========================================
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+SUPABASE_SERVICE_ROLE_KEY = (
+    os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    or os.environ.get("SUPABASE_SERVICE_KEY")
+    or os.environ.get("SUPABASE_KEY")
+)
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
 if not all([SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, GROQ_API_KEY]):
-    print("❌ COLAPSO_DE_SISTEMA: Faltam variáveis de ambiente.")
+    print("❌ COLAPSO_DE_SISTEMA: Faltam variáveis de ambiente (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY/SUPABASE_SERVICE_KEY, GROQ_API_KEY).")
     sys.exit(1)
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
@@ -26,31 +33,77 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 # 2. MOTORES DE EXTRAÇÃO E LIMPEZA
 # ==========================================
 
+NBA_ELITE_PLAYERS = {
+    "nikola jokic", "luka doncic", "giannis antetokounmpo", "shai gilgeous-alexander",
+    "jayson tatum", "stephen curry", "lebron james", "kevin durant", "joel embiid",
+    "anthony edwards", "jalen brunson", "anthony davis", "donovan mitchell", "devin booker",
+    "tyrese haliburton", "victor wembanyama", "ja morant", "jimmy butler", "damian lillard",
+    "bam adebayo", "domantas sabonis", "deaaron fox", "de'aaron fox", "trae young", "paul george",
+    "kawhi leonard", "james harden", "paolo banchero", "cade cunningham", "chet holmgren",
+    "lauri markkanen", "zion williamson", "karl-anthony towns", "jaylen brown", "kyrie irving",
+    "alperen sengun", "alperen şengün", "tyrese maxey", "jalen williams", "scottie barnes",
+    "pascal siakam", "brandon ingram", "mikal bridges", "kristaps porzingis", "jamal murray",
+    "derrick white", "darius garland", "evan mobley", "franz wagner", "desmond bane",
+    "lamelo ball", "fred vanvleet", "demar derozan", "zach lavine", "cj mccollum",
+    "anfernee simons", "miles bridges", "kyle kuzma", "jordan poole", "cam thomas", "austin reaves"
+}
+
 class InjuryMonitor:
-    def __init__(self, filepath):
+    def __init__(self, filepath="nba_injuries.json", supabase_client=None):
         self.injuries = []
-        if os.path.exists(filepath):
-            with open(filepath, 'r', encoding='utf-8') as f:
-                self.injuries = json.load(f)
+        # 1. Carrega dados frescos em tempo real diretamente do Supabase
+        if supabase_client:
+            try:
+                res = supabase_client.table("nba_injured_players").select("*").execute()
+                if res.data:
+                    self.injuries = res.data
+                    print(f"🚑 Monitor de Lesões: {len(self.injuries)} registros em tempo real carregados do Supabase.")
+            except Exception as e:
+                print(f"⚠️ Falha ao buscar lesões do Supabase: {e}")
+
+        # 2. Fallback para arquivo local caso o Supabase esteja indisponível ou vazio
+        if not self.injuries and os.path.exists(filepath):
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    self.injuries = json.load(f)
+                print(f"📁 Monitor de Lesões: {len(self.injuries)} registros carregados do backup local ({filepath}).")
+            except Exception as e:
+                print(f"⚠️ Falha ao ler {filepath}: {e}")
 
     def get_elite_injuries(self, team_name, min_rating=7.0):
         """
-        FIX: Condição unificada em um único `if` para evitar
-        duplicatas caso um jogador satisfaça múltiplos critérios.
+        Filtra desfalques de alto impacto (All-Star / Estrela / Nota alta / Rotação primária)
+        para o time fornecido.
         """
         elite_injuries = []
+        team_clean = team_name.lower().strip()
+        team_core = team_clean.split()[-1] if team_clean else ""
+
         for injury in self.injuries:
-            if team_name not in injury.get('team_name', ''):
+            t_name = str(injury.get('team_name', '')).lower()
+            t_abbr = str(injury.get('team_abbreviation', '')).lower()
+
+            if team_clean not in t_name and team_core not in t_name and team_clean != t_abbr:
                 continue
+
+            player_name = str(injury.get('player_name', '')).lower().strip()
             player_rating = injury.get('player_rating', 0) or injury.get('rating', 0)
             is_numeric_elite = isinstance(player_rating, (int, float)) and player_rating >= min_rating
-            is_flag_elite = (
+            is_flag_elite = bool(
                 injury.get('is_star') or
                 injury.get('all_star') or
                 injury.get('impact') == 'high'
             )
-            if is_numeric_elite or is_flag_elite:
-                elite_injuries.append(injury)
+            is_named_star = any(star in player_name for star in NBA_ELITE_PLAYERS)
+
+            if is_numeric_elite or is_flag_elite or is_named_star:
+                elite_injuries.append({
+                    "player_name": injury.get("player_name"),
+                    "position": injury.get("position"),
+                    "status": injury.get("injury_status", "Out"),
+                    "details": injury.get("injury_details") or injury.get("injury_description") or "Lesionado",
+                    "impact": "CRÍTICO/ESTRELA"
+                })
         return elite_injuries
 
 
@@ -135,7 +188,15 @@ def get_espn_games(date_obj):
 def get_databallr_matrix():
     try:
         res = supabase.table("databallr_team_stats").select("*").eq("period", "last_14_days").execute()
-        return {str(row.get("team_name")).lower(): row for row in res.data}
+        if res.data and len(res.data) >= 15:
+            return {str(row.get("team_name")).lower(): row for row in res.data}
+
+        print("⚠️ Matriz Databallr 'last_14_days' vazia ou incompleta. Tentando fallback para 'this_year'...")
+        res_fallback = supabase.table("databallr_team_stats").select("*").eq("period", "this_year").execute()
+        if res_fallback.data and len(res_fallback.data) > 0:
+            return {str(row.get("team_name")).lower(): row for row in res_fallback.data}
+
+        return {str(row.get("team_name")).lower(): row for row in (res.data or [])}
     except Exception as e:
         print(f"⚠️ Falha de conexão com a matriz Databallr: {e}")
         return {}
@@ -643,7 +704,7 @@ if __name__ == "__main__":
     date_iso = date_obj.strftime("%Y-%m-%d")
     print(f"🕒 INICIANDO MOTOR PREDITIVO PARA A DATA: {date_iso}")
 
-    inj_monitor = InjuryMonitor("nba_injuries.json")
+    inj_monitor = InjuryMonitor("nba_injuries.json", supabase_client=supabase)
     games = get_espn_games(date_obj)
 
     if not games:

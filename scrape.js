@@ -7,7 +7,7 @@ import * as cheerio from "cheerio";
 // [ HUD: INICIALIZAÇÃO DE PARÂMETROS GLOBAIS ]
 // -----------------------------------------------------------------------------
 const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
   console.error("❌ Erro Crítico: Matriz de variáveis do Supabase ausente.");

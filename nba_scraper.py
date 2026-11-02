@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 from typing import List, Optional, Dict, Any, Set
 from urllib.parse import quote
 
+from dotenv import load_dotenv
 from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field
 from supabase import create_client, Client
@@ -27,20 +28,25 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+load_dotenv()
+
 BRT = ZoneInfo("America/Sao_Paulo")
 ET  = ZoneInfo("America/New_York")
 
 
 # ─── Configuração ─────────────────────────────────────────────────────────────
-def _require_env(name: str) -> str:
-    val = os.environ.get(name, "").strip()
-    if not val:
-        raise EnvironmentError(f"❌ Secret ausente: {name}")
-    return val
+def _require_env(names) -> str:
+    if isinstance(names, str):
+        names = [names]
+    for name in names:
+        val = os.environ.get(name, "").strip()
+        if val:
+            return val
+    raise EnvironmentError(f"❌ Secret ausente: {' ou '.join(names)}")
 
 class Config:
     SUPABASE_URL     = _require_env("SUPABASE_URL")
-    SUPABASE_KEY     = _require_env("SUPABASE_SERVICE_KEY")
+    SUPABASE_KEY     = _require_env(["SUPABASE_SERVICE_KEY", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_KEY"])
     SCRAPINGANT_KEY  = os.environ.get("SCRAPINGANT_API_KEY", "")
     BASE_URL         = "https://scores24.live"
     PREDICTIONS_URL  = f"{BASE_URL}/pt/basketball/l-usa-nba"

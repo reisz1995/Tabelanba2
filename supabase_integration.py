@@ -1,6 +1,9 @@
 import os
 import json
+from dotenv import load_dotenv
 from supabase import create_client, Client
+
+load_dotenv()
 
 def main():
     print("🚀 Iniciando integração com Supabase...")
