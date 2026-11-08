@@ -2,7 +2,8 @@ name: Databallr Scraper - Season-to-Date (Auto)
 
 on:
   schedule:
-    - cron: '0 6 * * *' # Execução automática: 03:00 BRT
+    # Databallr atualiza os team stats por volta de 14:00 UTC; coletar depois.
+    - cron: '0 16 * * *' # 13:00 BRT
   workflow_dispatch:
     # Temporada derivada automaticamente pelo scraper.
 

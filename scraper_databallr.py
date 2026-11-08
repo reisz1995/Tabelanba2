@@ -22,7 +22,7 @@ Estética: Replicante / Architect-Engineer
 import os
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -118,6 +118,7 @@ class DataballrScraper:
         now_utc = datetime.now(timezone.utc)
         self.current_date = now_utc.date().isoformat()
         self.current_timestamp = now_utc.isoformat()
+        self.source_updated_at = None
 
         self.session = requests.Session()
         retries = Retry(
@@ -221,6 +222,9 @@ class DataballrScraper:
             response = self.session.get(api_url, timeout=20)
             response.raise_for_status()
             payload = response.json()
+            team_block = payload.get('team')
+            if isinstance(team_block, dict):
+                self.source_updated_at = team_block.get('updated_at')
 
             teams_raw, target_key = self._select_team_block(payload)
 
@@ -329,6 +333,7 @@ class DataballrScraper:
             'execution_date': self.current_timestamp,
             'season': self.season,
             'api_season': self.api_season,
+            'source_updated_at': None,
             'periods_processed': {}
         }
         total_records = 0
@@ -339,6 +344,27 @@ class DataballrScraper:
 
             if df.empty:
                 raise ValueError("Nenhum registro extraído da API Databallr.")
+
+            if not self.source_updated_at:
+                raise ValueError("A API Databallr não informou updated_at; coleta cancelada por segurança.")
+
+            source_updated = datetime.fromisoformat(
+                self.source_updated_at.replace('Z', '+00:00')
+            )
+            if source_updated.tzinfo is None:
+                source_updated = source_updated.replace(tzinfo=timezone.utc)
+            source_age = datetime.now(timezone.utc) - source_updated
+            summary['source_updated_at'] = self.source_updated_at
+            summary['source_age_hours'] = round(source_age.total_seconds() / 3600, 2)
+            logger.info(
+                f"[SRC-AGE] Databallr atualizado em {self.source_updated_at}; "
+                f"idade do snapshot: {summary['source_age_hours']}h."
+            )
+            if source_age > timedelta(hours=12):
+                raise ValueError(
+                    f"Snapshot Databallr está atrasado ({summary['source_age_hours']}h; "
+                    "limite 12h). Dados não foram gravados no Supabase."
+                )
 
             records = df.to_dict('records')
 
