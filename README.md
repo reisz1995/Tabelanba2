@@ -50,7 +50,7 @@ Pipeline analítico e preditivo automatizado para a NBA. O sistema realiza extra
 | `teams` | `update-nba-stats.js` | Informações de cada time e histórico dos últimos 5 jogos (`record`) |
 | `nba_jogadores_stats` | `importPlayers.js` | Estatísticas dos líderes da liga (pontos, rebotes, assistências) |
 | `nba_injured_players` | `nba_injuries_api.py` | Jogadores lesionados em tempo real da ESPN com detalhes clínicos |
-| `databallr_team_stats`| `scraper_databallr.py`| Tensores analíticos: ORTG, DRTG, Net Rating, True Shooting, Rebounds (`last_14_days` e `this_year`) |
+| `databallr_team_stats`| `scraper_databallr.py`| Tensores analíticos: ORTG, DRTG, Net Rating, True Shooting, Rebounds (season-to-date da temporada em curso, `period='this_year'`) |
 | `nba_odds_matrix`     | Manual / Feed | Linhas de odds do mercado |
 | `game_predictions`    | `predict_games.py` | Predições da IA (Over/Under, Handicap, Confiança, Alerta de Lesão) |
 | `nba_games_schedule`  | `nba_scraper.py` | Slugs, horários e textos táticos raspados do Scores24 |

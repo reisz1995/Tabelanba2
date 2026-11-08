@@ -1,14 +1,16 @@
-name: Databallr Scraper - Last 14 Days (Hardcoded)
+name: Databallr Scraper - Season-to-Date (Auto)
 
 on:
   schedule:
     - cron: '0 6 * * *' # Execução automática: 03:00 BRT
   workflow_dispatch:
-    # [SYS-OP] Inputs removidos para garantir integridade do banco (Apenas 14 dias)
+    # Temporada derivada automaticamente pelo scraper.
 
 env:
   PYTHON_VERSION: '3.11'
-  DATABALLR_SEASON: '2025-26'
+  # Temporada derivada automaticamente pelo scraper (ago-dez -> temporada corrente;
+  # jan-jun -> temporada iniciada no ano anterior). Defina DATABALLR_SEASON aqui
+  # apenas para forçar uma temporada específica.
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 permissions:
@@ -39,7 +41,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas requests supabase python-dotenv beautifulsoup4 lxml
 
-      - name: 🏀 [OP] Execução do Motor Scraper (14d)
+      - name: 🏀 [OP] Execução do Motor Scraper (season-to-date)
         id: scraper
         run: python scraper_databallr.py
 
@@ -54,17 +56,17 @@ jobs:
           key = os.environ.get("SUPABASE_SERVICE_KEY")
           client = create_client(url, key)
           
-          # Constante de auditoria fixa para o novo modelo
-          target_period = "last_14_days"
+          # Constante de auditoria: os dados são agregados season-to-date
+          target_period = "this_year"
           
           res = client.table('databallr_team_stats').select('id', count='exact').eq('period', target_period).execute()
           
           if res.count == 0:
               print(f"❌ [CRITICAL] Vazio detectado: {target_period} não possui vetores."); sys.exit(1)
           elif res.count < 30:
-              print(f"⚠️ [WARN] Fragmentação detectada: {res.count}/30 equipes processadas."); sys.exit(0)
+              print(f"❌ [CRITICAL] Fragmentação detectada: {res.count}/30 equipes processadas."); sys.exit(1)
               
-          print(f"✅ [STABLE] {res.count} vetores operacionais no quadrante 14d.")
+          print(f"✅ [STABLE] {res.count} vetores operacionais no quadrante this_year.")
           EOF
           python validate.py
 
@@ -86,7 +88,7 @@ jobs:
             github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `🚨 FALHA CRÍTICA: Scraper 14d (${new Date().toISOString()})`,
+              title: `🚨 FALHA CRÍTICA: Scraper season-to-date (${new Date().toISOString()})`,
               body: `Falha na extração ou validação. Run ID: #${context.runId}`,
               labels: ['bug', 'data-integrity']
             })

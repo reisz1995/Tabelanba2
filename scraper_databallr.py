@@ -1,8 +1,22 @@
 #!/usr/bin/env python3
 """
 Módulo Extrator NBA [Databallr -> Supabase -> Google AI Studio]
-Versão: 5.6 (Multi-Period: last_14_days + this_year, Deep-Search, Key Normalization, Extended Tensors & Full Team Names)
+Versão: 6.0 (Season-to-Date único, Temporada Auto-Derivada, Bloco 'team' Explícito, Endpoint /v1)
 Estética: Replicante / Architect-Engineer
+
+[CORREÇÕES 6.0]
+1. Temporada: derivada automaticamente da data (ago-dez -> temporada iniciada no ano corrente;
+   jan-jul -> temporada iniciada no ano anterior). Ex.: nov/2026 -> 2026-27 -> api_season=2027.
+   O parâmetro antigo 'season=2026' retornava a temporada 2025-26 COMPLETA (encerrada),
+   o que fazia o banco guardar dados da temporada anterior rotulados como atuais.
+2. Bloco de dados: a API retorna {team: {..., team_data}, opponent: {..., team_data}}.
+   A auto-descoberta antiga selecionava 'opponent->team_data' (stat_type='opponent',
+   estatísticas DOS ADVERSÁRIOS), invertendo ORtg/DRTg. Agora o bloco 'team' é explícito.
+3. date_window: comprovadamente IGNORADO pela API (testados last_14_days, last_14_games,
+   last_30_days, this_year, etc. — todos retornam o mesmo agregado). A parametrização
+   multi-período foi removida: os dados são o agregado season-to-date da temporada atual,
+   armazenados sob period='this_year'.
+4. Endpoint: /v1/nba/teams/stats, o mesmo usado pelo frontend do site.
 """
 
 import os
@@ -65,20 +79,41 @@ TEAM_NAME_MAP: dict[str, str] = {
 }
 
 
-class DataballrScraper:
-    def __init__(self, season: str = "2025-26", periods: list[str] = None):
-        season_env = os.getenv("DATABALLR_SEASON", season)
-        self.api_season = "20" + season_env.split('-')[1] if '-' in season_env else "2026"
+# ---------------------------------------------------------------------------
+# Resolução de temporada (auto-derivada da data)
+# ---------------------------------------------------------------------------
+def resolve_current_season() -> str:
+    """Retorna o identificador da temporada em curso no formato 'AAAA-BB'.
 
-        # [MULTI-PERÍODO] Garante suporte a last_14_days (usado no predict_games e testes)
-        # e this_year (visão acumulada da temporada).
-        env_period = os.getenv("DATABALLR_PERIOD")
-        if periods:
-            self.periods = periods
-        elif env_period:
-            self.periods = [p.strip() for p in env_period.split(",") if p.strip()]
-        else:
-            self.periods = ["last_14_days", "this_year"]
+    Agosto a dezembro usa o ano corrente como início da temporada; janeiro a
+    julho usa o ano anterior. Ex.: nov/2026 -> '2026-27'.
+    """
+    now = datetime.now(timezone.utc)
+    start_year = now.year if now.month >= 8 else now.year - 1
+    return f"{start_year}-{str((start_year + 1) % 100).zfill(2)}"
+
+
+def season_label_to_api_season(season_env: str) -> str:
+    """Converte '2026-27' (ou '2027') em o ano de encerramento usado pela API ('2027')."""
+    season_env = str(season_env).strip()
+    if season_env.isdigit():
+        return season_env
+    if '-' in season_env:
+        return "20" + season_env.split('-')[1]
+    raise ValueError(f"[SYS-ERR] Temporada inválida: '{season_env}'")
+
+
+class DataballrScraper:
+    def __init__(self, season: str = None):
+        # [TEMPORADA] Derivação automática; DATABALLR_SEASON sobrepõe se definido.
+        env_season = os.getenv("DATABALLR_SEASON")
+        self.season = season or env_season or resolve_current_season()
+        self.api_season = season_label_to_api_season(self.season)
+
+        # [PERÍODO ÚNICO] A API só entrega o agregado season-to-date.
+        # Não aceitar rótulos de janelas curtas: a API ignora date_window e
+        # retornaria o agregado completo da temporada sob um rótulo incorreto.
+        self.period = "this_year"
 
         now_utc = datetime.now(timezone.utc)
         self.current_date = now_utc.date().isoformat()
@@ -124,56 +159,94 @@ class DataballrScraper:
         return TEAM_NAME_MAP.get(abbr.upper(), fallback)
 
     # -----------------------------------------------------------------------
-    # Motor de extração por período
+    # Seleção do bloco de dados de time (não dos adversários)
     # -----------------------------------------------------------------------
-    def fetch_data_for_period(self, period_label: str) -> pd.DataFrame:
-        """Motor Matemático: Extração via API + Heurística de Profundidade + Normalização."""
+    def _select_team_block(self, payload: dict):
+        """Isola a matriz de estatísticas do próprio time.
+
+        Prioridade explícita:
+          1. Nós com stat_type == 'team' (ex.: payload['team']['team_data']).
+        Fallback de varredura (profundidade 0 e 1) caso a estrutura mude,
+        sempre preferindo uma chave cujo nome NÃO seja 'opponent'.
+        """
+        def is_matrix(v) -> bool:
+            return isinstance(v, list) and len(v) >= 28
+
+        # 1) Caminho explícito /v1: {team: {stat_type, team_data}, opponent: {...}}
+        for node_key in ('team', 'teams', 'data'):
+            node = payload.get(node_key)
+            if isinstance(node, dict) and is_matrix(node.get('team_data')):
+                if str(node.get('stat_type', 'team')).lower() == 'team':
+                    return node['team_data'], f"{node_key}->team_data"
+
+        # 2) Formato antigo de lista no nível raiz
+        for k, v in payload.items():
+            if is_matrix(v):
+                return v, k
+
+        # 3) Fallback varredura O(N): nunca aceitar stat_type='opponent' primeiro
+        candidates = []
+        for k, v in payload.items():
+            if isinstance(v, dict):
+                for sub_k, sub_v in v.items():
+                    if is_matrix(sub_v):
+                        stat_type = str(v.get('stat_type', sub_k)).lower()
+                        if stat_type == 'opponent' or 'opponent' in k.lower():
+                            continue
+                        candidates.append((
+                            0 if stat_type == 'team' else 1,
+                            0 if 'opponent' not in k.lower() else 1,
+                            k, sub_k, sub_v
+                        ))
+        if candidates:
+            candidates.sort(key=lambda c: (c[0], c[1]))
+            _, _, k, sub_k, sub_v = candidates[0]
+            return sub_v, f"{k}->{sub_k}"
+
+        return None, None
+
+    # -----------------------------------------------------------------------
+    # Motor de extração (season-to-date)
+    # -----------------------------------------------------------------------
+    def fetch_data(self) -> pd.DataFrame:
+        """Motor Matemático: Extração via API + Normalização."""
+        period_label = self.period
         api_url = (
-            f"https://api.databallr.com/api/supabase/team_stats"
-            f"?season={self.api_season}&leverage=all&date_window={period_label}"
+            f"https://api.databallr.com/v1/nba/teams/stats"
+            f"?season={self.api_season}&leverage=all"
         )
-        logger.info(f"[NET-FETCH] Link Direto ({period_label}): {api_url}")
+        logger.info(f"[NET-FETCH] Link Direto ({period_label} | season={self.season}): {api_url}")
 
         try:
             response = self.session.get(api_url, timeout=20)
             response.raise_for_status()
             payload = response.json()
 
-            # --- ALGORITMO DE AUTO-DESCOBERTA AVANÇADO ---
-            teams_raw = []
-            target_key = "UNKNOWN"
-
-            # Varredura O(N) em Profundidade 0 e 1
-            for k, v in payload.items():
-                if isinstance(v, list) and len(v) >= 28:
-                    teams_raw = v
-                    target_key = k
-                    break
-                elif isinstance(v, dict):
-                    for sub_k, sub_v in v.items():
-                        if isinstance(sub_v, list) and len(sub_v) >= 28:
-                            teams_raw = sub_v
-                            target_key = f"{k}->{sub_k}"
-                            break
+            teams_raw, target_key = self._select_team_block(payload)
 
             if not teams_raw:
                 debug_info = {k: type(v).__name__ for k, v in payload.items()}
-                logger.error(f"[VAL-ERR] Matriz nula para {period_label}. Estrutura: {debug_info}")
+                logger.error(f"[VAL-ERR] Matriz nula. Estrutura: {debug_info}")
                 return pd.DataFrame()
 
             logger.info(
-                f"[SYS-OP] Matriz '{period_label}' localizada no nó '{target_key}' com {len(teams_raw)} vetores."
+                f"[SYS-OP] Matriz season-to-date localizada no nó '{target_key}' "
+                f"com {len(teams_raw)} vetores."
             )
 
             # Função de normalização de tensores (Ignora Case e Underscores)
             def normalize(d: dict) -> dict:
                 return {str(k).lower().replace('_', ''): v for k, v in d.items()}
 
-            league_avg_raw = (
-                payload.get('opponent', {}).get('league_avg', {})
-                or payload.get('league_avg', {})
+            # Média da liga: preferir o league_avg do bloco 'team'
+            block = (
+                payload.get('team')
+                or payload.get('teams')
+                or payload
             )
-            league_avg = normalize(league_avg_raw)
+            league_avg = normalize(
+                block.get('league_avg') if isinstance(block, dict) else {}
+            )
             league_pts = league_avg.get('points', 0)
             league_poss = league_avg.get('offposs', 1)
             league_ortg = (
@@ -250,39 +323,36 @@ class DataballrScraper:
     # Pipeline de persistência
     # -----------------------------------------------------------------------
     def run(self):
-        """Pipeline Atômico de Persistência com suporte multi-período."""
+        """Pipeline Atômico de Persistência (season-to-date único)."""
         summary = {
             'status': 'FAILED',
             'execution_date': self.current_timestamp,
+            'season': self.season,
+            'api_season': self.api_season,
             'periods_processed': {}
         }
         total_records = 0
 
         try:
-            for period in self.periods:
-                logger.info(f"🚀 Iniciando ciclo para período: '{period}'...")
-                df = self.fetch_data_for_period(period)
+            logger.info(f"🚀 Iniciando ciclo '{self.period}' (temporada {self.season})...")
+            df = self.fetch_data()
 
-                if df.empty:
-                    logger.warning(f"⚠️ Vetor nulo para período '{period}'. Pulando...")
-                    continue
+            if df.empty:
+                raise ValueError("Nenhum registro extraído da API Databallr.")
 
-                records = df.to_dict('records')
+            records = df.to_dict('records')
 
-                # [OTIMIZAÇÃO] Resolução de conflitos baseada em (team_id, period)
-                self.supabase.table('databallr_team_stats').upsert(
-                    records, on_conflict='team_id,period'
-                ).execute()
+            # [OTIMIZAÇÃO] Resolução de conflitos baseada em (team_id, period)
+            self.supabase.table('databallr_team_stats').upsert(
+                records, on_conflict='team_id,period'
+            ).execute()
 
-                summary['periods_processed'][period] = {
-                    'teams_processed': len(df),
-                    'avg_net_rating': round(float(df['net_rating'].mean()), 2)
-                }
-                total_records += len(df)
-                logger.info(f"[SYS-OP] Período '{period}' sincronizado ({len(df)} equipes).")
-
-            if total_records == 0:
-                raise ValueError("Nenhum registro extraído em nenhum dos períodos.")
+            summary['periods_processed'][self.period] = {
+                'teams_processed': len(df),
+                'avg_net_rating': round(float(df['net_rating'].mean()), 2)
+            }
+            total_records = len(df)
+            logger.info(f"[SYS-OP] Período '{self.period}' sincronizado ({len(df)} equipes).")
 
             summary['status'] = 'SUCCESS'
             summary['total_records'] = total_records

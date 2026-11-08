@@ -187,15 +187,11 @@ def get_espn_games(date_obj):
 
 def get_databallr_matrix():
     try:
-        res = supabase.table("databallr_team_stats").select("*").eq("period", "last_14_days").execute()
+        res = supabase.table("databallr_team_stats").select("*").eq("period", "this_year").execute()
         if res.data and len(res.data) >= 15:
             return {str(row.get("team_name")).lower(): row for row in res.data}
 
-        print("⚠️ Matriz Databallr 'last_14_days' vazia ou incompleta. Tentando fallback para 'this_year'...")
-        res_fallback = supabase.table("databallr_team_stats").select("*").eq("period", "this_year").execute()
-        if res_fallback.data and len(res_fallback.data) > 0:
-            return {str(row.get("team_name")).lower(): row for row in res_fallback.data}
-
+        print("⚠️ Matriz Databallr 'this_year' vazia ou incompleta; ignorando dados legados 'last_14_days'.")
         return {str(row.get("team_name")).lower(): row for row in (res.data or [])}
     except Exception as e:
         print(f"⚠️ Falha de conexão com a matriz Databallr: {e}")
