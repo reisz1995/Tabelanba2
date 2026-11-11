@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Módulo Extrator NBA [Databallr -> Supabase -> Google AI Studio]
-Versão: 6.0 (Season-to-Date único, Temporada Auto-Derivada, Bloco 'team' Explícito, Endpoint /v1)
+Versão: 6.1 (Season-to-Date, Temporada Auto-Derivada, Bloco 'team' Explícito, Six Factors)
 Estética: Replicante / Architect-Engineer
 
 [CORREÇÕES 6.0]
@@ -17,6 +17,22 @@ Estética: Replicante / Architect-Engineer
    multi-período foi removida: os dados são o agregado season-to-date da temporada atual,
    armazenados sob period='this_year'.
 4. Endpoint: /v1/nba/teams/stats, o mesmo usado pelo frontend do site.
+
+[ADIÇÕES 6.1 — SIX FACTORS]
+5. Os Six Factors do site (oTS, oTOV, oORB, dTS, dTOV, dDRB, NetEff, NetPoss) são
+   calculados no CLIENTE, a partir do mesmo payload da API. O scraper agora replica
+   fielmente o algoritmo do chunk 'teamStatsCalculations' (funções m()/Gc()),
+   validado contra os 30 times do site com erro máximo de 0,05 (arredondamento).
+   Colunas novas: o_ts_impact, o_tov_impact, o_orb_impact, d_ts_impact,
+   d_tov_impact, d_drb_impact (migração: migrations/20261111_databallr_six_factors.sql).
+6. Semântica de net_eff/net_poss alinhada ao site:
+     net_eff  = oTS + dTS  (impacto líquido da eficiência de arremessos)
+     net_poss = oTOV + oORB + dTOV + dDRB (impacto líquido de posses/rebotes)
+   (antes: net_eff = ORTG-DRTG e net_poss = OffPoss-DefPoss; o rating líquido
+   continua disponível na coluna net_rating.)
+   As colunas cruas (o_ts = TS% x100, o_tov = TOV/100 posses, orb, drb) são mantidas.
+7. Fallback de upsert: se as colunas de impacto ainda não existirem no Supabase,
+   os registros base são gravados sem os impactos, com warning no log.
 """
 
 import os
@@ -77,6 +93,68 @@ TEAM_NAME_MAP: dict[str, str] = {
     'UTA': 'Utah Jazz',
     'WAS': 'Washington Wizards',
 }
+# ---------------------------------------------------------------------------
+# Six Factors: colunas de impacto e réplica do algoritmo do Databallr
+# ---------------------------------------------------------------------------
+SIX_FACTOR_COLUMNS = (
+    'o_ts_impact', 'o_tov_impact', 'o_orb_impact',
+    'd_ts_impact', 'd_tov_impact', 'd_drb_impact',
+)
+
+
+def six_factor_decompose(
+    fc_team: float, ts_team: float, sc_team: float, tov_nc_team: float,
+    fc_lg: float, ts_lg: float, sc_lg: float, tov_nc_lg: float,
+    rtg_diff: float,
+) -> tuple[float, float, float]:
+    """Réplica fiel da função 'm()' do chunk 'teamStatsCalculations' do Databallr.
+
+    Decompõe a diferença de ORTG (rtg_diff, em pontos por 100 posses) em três
+    componentes expressos em pontos por 100 posses:
+
+      - TS  : impacto da eficiência de arremessos (pontos de primeira chance
+              ganhos/perdidos vs. a liga, via True Shooting);
+      - TOV : impacto do controle de turnovers (pontos de primeira chance);
+      - ORB : impacto dos rebotes ofensivos (diferença de pontos de segunda
+              chance + resíduo do ORTG não explicado pelos dois primeiros).
+
+    Parâmetros (todos derivados de um bloco de dados + seu league_avg):
+      fc_team/ts_team/sc_team/tov_nc_team : FirstChancePoints/OffPoss*100,
+        TsPct (fração), SecondChancePoints/OffPoss*100 e
+        (Turnovers-SecondChanceTurnovers)/OffPoss do time;
+      fc_lg/ts_lg/sc_lg/tov_nc_lg : os mesmos para o league_avg;
+      rtg_diff : rating do time - rating da liga (pontos por 100 posses).
+
+    Retorna (ts_component, tov_component, orb_component).
+    """
+    ts_diff = ts_team - ts_lg
+    tov_diff = tov_nc_team - tov_nc_lg
+    fc_diff = fc_team - fc_lg
+    sc_diff = sc_team - sc_lg
+
+    # Alocações brutas (F e R no original); guardas d>0 e y<1 replicadas.
+    f_raw = (ts_diff * fc_lg / ts_lg) if ts_lg > 0 else 0.0
+    e_raw = (-tov_diff * fc_lg / (1 - tov_nc_lg)) if tov_nc_lg < 1 else 0.0
+
+    if (f_raw > 0 and e_raw < 0) or (f_raw < 0 and e_raw > 0):
+        # Sinais opostos: TOV integral e TS absorve o restante da 1a chance.
+        e = e_raw
+        f = fc_diff - e
+    else:
+        q = f_raw + e_raw
+        if abs(q) > 1e-3:
+            h = fc_diff / q
+            f = f_raw * h
+            e = e_raw * h
+        else:
+            f = fc_diff
+            e = 0.0
+
+    t = sc_diff
+    residual = rtg_diff - (f + e + t)
+    if abs(residual) > 0.01 and abs(f) + abs(e) + abs(t) > 0:
+        return f, e, t + residual
+    return f, e, t
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +320,21 @@ class DataballrScraper:
             def normalize(d: dict) -> dict:
                 return {str(k).lower().replace('_', ''): v for k, v in d.items()}
 
-            # Média da liga: preferir o league_avg do bloco 'team'
+            # Bloco opponent: necessário para os fatores defensivos (Six Factors).
+            opp_block = payload.get('opponent')
+            opps_raw = (opp_block or {}).get('team_data') or []
+            opp_league_avg = normalize(
+                (opp_block or {}).get('league_avg') or {}
+            )
+            opp_map = {}
+            for o_raw in opps_raw:
+                o = normalize(o_raw)
+                o_id = o.get('teamid') or o.get('id')
+                if o_id is not None:
+                    opp_map[int(o_id)] = o
+
+            # Baselines da liga (bloco 'team' para o lado ofensivo e bloco
+            # 'opponent' para o lado defensivo — como no site).
             block = (
                 payload.get('team')
                 or payload.get('teams')
@@ -251,13 +343,34 @@ class DataballrScraper:
             league_avg = normalize(
                 block.get('league_avg') if isinstance(block, dict) else {}
             )
-            league_pts = league_avg.get('points', 0)
-            league_poss = league_avg.get('offposs', 1)
-            league_ortg = (
-                (league_pts / league_poss) * 100
-                if league_pts > 0 and league_poss > 0
+            lg_off_poss = league_avg.get('offposs', 0)
+            lg_ortg = (
+                (league_avg.get('points', 0) / lg_off_poss) * 100
+                if lg_off_poss > 0
                 else 115.0
             )
+            lg_ts = league_avg.get('tspct', 0.0)
+            lg_fc100 = (league_avg.get('firstchancepoints', 0) / lg_off_poss) * 100 if lg_off_poss else 0.0
+            lg_sc100 = (league_avg.get('secondchancepoints', 0) / lg_off_poss) * 100 if lg_off_poss else 0.0
+            lg_tov_nc = (
+                (league_avg.get('turnovers', 0) - league_avg.get('secondchanceturnovers', 0)) / lg_off_poss
+                if lg_off_poss else 0.0
+            )
+
+            lgo_off_poss = opp_league_avg.get('offposs', 0)
+            lgo_ts = opp_league_avg.get('tspct', 0.0)
+            lgo_fc100 = (opp_league_avg.get('firstchancepoints', 0) / lgo_off_poss) * 100 if lgo_off_poss else 0.0
+            lgo_sc100 = (opp_league_avg.get('secondchancepoints', 0) / lgo_off_poss) * 100 if lgo_off_poss else 0.0
+            lgo_tov_nc = (
+                (opp_league_avg.get('turnovers', 0) - opp_league_avg.get('secondchanceturnovers', 0)) / lgo_off_poss
+                if lgo_off_poss else 0.0
+            )
+            six_factors_available = bool(opp_map) and lg_ts > 0 and lgo_ts > 0
+            if not six_factors_available:
+                logger.warning(
+                    "[SIX-WARN] Bloco 'opponent' ou baselines da liga ausentes; "
+                    "impactos Six Factors serão gravados como 0."
+                )
 
             teams_data = []
             for t_raw in teams_raw:
@@ -270,19 +383,63 @@ class DataballrScraper:
                 opp_pts  = t.get('opponentpoints') or t.get('opppoints', 0)
 
                 # [DERIVAÇÃO DE TENSORES]
-                net_poss = off_poss - def_poss
-
                 ortg       = (pts     / off_poss) * 100 if off_poss else 0.0
                 drtg       = (opp_pts / def_poss) * 100 if def_poss else 0.0
                 net_rating = ortg - drtg
-                net_eff    = ortg - drtg
 
                 o_ts  = t.get('tspct', 0.0)
                 o_tov = (t.get('turnovers', 0) / off_poss) * 100 if off_poss else 0.0
                 orb   = t.get('offfgreboundpct') or t.get('orbpct', 0.0)
                 drb   = t.get('deffgreboundpct') or t.get('drbpct', 0.0)
 
-                team_id   = t.get('teamid') or t.get('id', 0)
+                # [SIX FACTORS] Réplica do cálculo client-side do Databallr
+                # (Gc(): ofensa usa baselines do bloco 'team'; defesa usa a
+                # entrada do MESMO TeamId no bloco 'opponent' com baselines do
+                # league_avg desse bloco).
+                o_ts_impact = o_tov_impact = o_orb_impact = 0.0
+                d_ts_impact = d_tov_impact = d_drb_impact = 0.0
+                # Fallback (sem bloco 'opponent'): net_eff vira o rating líquido
+                # e net_poss fica em 0 — sem decomposição não há o que gravar.
+                net_eff = ortg - drtg
+                net_poss = 0.0
+
+                team_id_val = t.get('teamid') or t.get('id', 0)
+                opp_t = opp_map.get(int(team_id_val)) if six_factors_available else None
+
+                if opp_t is not None:
+                    opp_off_poss = opp_t.get('offposs', 1)
+                    # DRTG pela fórmula do site: pontos do adversário / posses dele
+                    drtg_site = (opp_t.get('points', 0) / opp_off_poss) * 100 if opp_off_poss else 0.0
+
+                    # --- Ofensa (bloco 'team') ---
+                    c_ts, c_tov, c_orb = six_factor_decompose(
+                        fc_team=(t.get('firstchancepoints', 0) / off_poss) * 100,
+                        ts_team=o_ts,
+                        sc_team=(t.get('secondchancepoints', 0) / off_poss) * 100,
+                        tov_nc_team=(t.get('turnovers', 0) - t.get('secondchanceturnovers', 0)) / off_poss,
+                        fc_lg=lg_fc100, ts_lg=lg_ts, sc_lg=lg_sc100, tov_nc_lg=lg_tov_nc,
+                        rtg_diff=ortg - lg_ortg,
+                    )
+
+                    # --- Defesa (entrada do mesmo TeamId no bloco 'opponent') ---
+                    d_ts, d_tov, d_orb = six_factor_decompose(
+                        fc_team=(opp_t.get('firstchancepoints', 0) / opp_off_poss) * 100,
+                        ts_team=opp_t.get('tspct', 0.0),
+                        sc_team=(opp_t.get('secondchancepoints', 0) / opp_off_poss) * 100,
+                        tov_nc_team=(opp_t.get('turnovers', 0) - opp_t.get('secondchanceturnovers', 0)) / opp_off_poss,
+                        fc_lg=lgo_fc100, ts_lg=lgo_ts, sc_lg=lgo_sc100, tov_nc_lg=lgo_tov_nc,
+                        rtg_diff=drtg_site - lg_ortg,
+                    )
+
+                    # Display do site: defensivos com sinal invertido
+                    # (positivo = boa defesa); netEff = C.ts - D.ts;
+                    # netPoss = C.tov + C.orb - D.tov - D.orb (componentes crus).
+                    o_ts_impact, o_tov_impact, o_orb_impact = c_ts, c_tov, c_orb
+                    d_ts_impact, d_tov_impact, d_drb_impact = -d_ts, -d_tov, -d_orb
+                    net_eff = c_ts - d_ts
+                    net_poss = c_tov + c_orb - d_tov - d_orb
+
+                team_id   = team_id_val
                 team_abbr = (
                     t.get('teamabbreviation')
                     or t.get('abbr')
@@ -301,12 +458,18 @@ class DataballrScraper:
                     'net_rating':        round(net_rating, 1),
                     'net_poss':          round(net_poss, 1),
                     'net_eff':           round(net_eff, 1),
-                    'offense_rating':    round(ortg - league_ortg, 1),
-                    'defense_rating':    round(league_ortg - drtg, 1),
+                    'offense_rating':    round(ortg - lg_ortg, 1),
+                    'defense_rating':    round(lg_ortg - drtg, 1),
                     'o_ts':              round(o_ts * 100, 1),
                     'o_tov':             round(o_tov, 1),
                     'orb':               round(orb * 100, 1),
                     'drb':               round(drb * 100, 1),
+                    'o_ts_impact':       round(o_ts_impact, 1),
+                    'o_tov_impact':      round(o_tov_impact, 1),
+                    'o_orb_impact':      round(o_orb_impact, 1),
+                    'd_ts_impact':       round(d_ts_impact, 1),
+                    'd_tov_impact':      round(d_tov_impact, 1),
+                    'd_drb_impact':      round(d_drb_impact, 1),
                     'record_date':       self.current_date,
                     'period':            period_label,
                     'created_at':        self.current_timestamp,
@@ -322,6 +485,35 @@ class DataballrScraper:
         except Exception as e:
             logger.error(f"[FATAL] Falha de processamento para {period_label}: {str(e)}")
             return pd.DataFrame()
+
+    # -----------------------------------------------------------------------
+    # Persistência com fallback (colunas Six Factors podem não existir ainda)
+    # -----------------------------------------------------------------------
+    def _upsert_records(self, records: list) -> str:
+        """Upsert em (team_id, period); se as colunas de impacto não existirem,
+        grava os registros base e avisa para rodar a migração SQL."""
+        try:
+            self.supabase.table('databallr_team_stats').upsert(
+                records, on_conflict='team_id,period'
+            ).execute()
+            return 'full'
+        except Exception as exc:
+            msg = str(exc)
+            if 'PGRST204' in msg or 'o_ts_impact' in msg or 'column' in msg.lower():
+                trimmed = [
+                    {k: v for k, v in r.items() if k not in SIX_FACTOR_COLUMNS}
+                    for r in records
+                ]
+                self.supabase.table('databallr_team_stats').upsert(
+                    trimmed, on_conflict='team_id,period'
+                ).execute()
+                logger.warning(
+                    "[DB-WARN] Colunas Six Factors ausentes no Supabase; "
+                    "registros gravados sem os impactos. Execute "
+                    "migrations/20261111_databallr_six_factors.sql."
+                )
+                return 'partial'
+            raise
 
     # -----------------------------------------------------------------------
     # Pipeline de persistência
@@ -369,13 +561,12 @@ class DataballrScraper:
             records = df.to_dict('records')
 
             # [OTIMIZAÇÃO] Resolução de conflitos baseada em (team_id, period)
-            self.supabase.table('databallr_team_stats').upsert(
-                records, on_conflict='team_id,period'
-            ).execute()
+            upsert_mode = self._upsert_records(records)
 
             summary['periods_processed'][self.period] = {
                 'teams_processed': len(df),
-                'avg_net_rating': round(float(df['net_rating'].mean()), 2)
+                'avg_net_rating': round(float(df['net_rating'].mean()), 2),
+                'upsert_mode': upsert_mode
             }
             total_records = len(df)
             logger.info(f"[SYS-OP] Período '{self.period}' sincronizado ({len(df)} equipes).")

@@ -213,7 +213,12 @@ def match_databallr_stats(espn_team_name: str, databallr_matrix: dict) -> dict:
             return stats
 
     print(f"⚠️ Time '{espn_team_name}' não encontrado na matriz Databallr. Usando defaults.")
-    return {"ortg": 115.0, "drtg": 115.0, "net_eff": 0.0, "o_ts": 55.0, "orb": 25.0, "net_poss": 0}
+    return {
+        "ortg": 115.0, "drtg": 115.0, "net_rating": 0.0,
+        "net_eff": 0.0, "net_poss": 0.0, "o_ts": 55.0, "orb": 25.0,
+        "o_ts_impact": 0.0, "o_tov_impact": 0.0, "o_orb_impact": 0.0,
+        "d_ts_impact": 0.0, "d_tov_impact": 0.0, "d_drb_impact": 0.0,
+    }
 
 
 def get_market_odds(home_full: str, away_full: str) -> dict:
@@ -499,9 +504,13 @@ GROQ_SYSTEM_PROMPT = """Você é o Estatístico Chefe do sistema NBA-MONITOR. Ca
 
 DIRETRIZES OBRIGATÓRIAS DE ANÁLISE:
 
-1. MATEMÁTICA DE OVER/UNDER (DATABALLR 14D - PRIORIDADE MÁXIMA):
-   - Utilize as métricas avançadas dos últimos 14 dias (ORTG, DRTG, NET_EFF, True Shooting).
-   - Equação Base: Projete a pontuação cruzando o ORTG (Ataque) de um time contra o DRTG (Defesa) do outro, ajustado pelo Ritmo (Pace/Net Poss).
+1. MATEMÁTICA DE OVER/UNDER (DATABALLR SEASON-TO-DATE - PRIORIDADE MÁXIMA):
+   - Utilize as métricas da temporada (season-to-date): ORTG, DRTG, NET_RATING e os Six Factors.
+   - Semântica Databallr (pontos por 100 posses, positivo = favorável):
+     * NET_EFF = oTS + dTS: impacto líquido da EFICIÊNCIA DE ARREMESSOS (não é o rating líquido).
+     * NET_POSS = oTOV + oORB + dTOV + dDRB: impacto líquido de POSSES/REBOTES.
+     * NET_RATING = ORTG - DRTG: eficiência líquida pura (use para pace/força global).
+   - Equação Base: Projete a pontuação cruzando o ORTG (Ataque) de um time contra o DRTG (Defesa) do outro.
    - Defesa em Colapso = DRTG > 116.0. Ataque de Elite = ORTG > 117.0.
    - OVER RECOMENDADO apenas se ambos os times tiverem projeção matemática > 112 pontos cada e True Shooting (o_ts) > 57%.
 
@@ -510,7 +519,7 @@ DIRETRIZES OBRIGATÓRIAS DE ANÁLISE:
 
 3. FATORES CASA E MOMENTUM:
    - Contenders (win% >= 60%) em casa: Vantagem massiva.
-   - Use o NET_EFF (Eficiência Líquida) recente para validar se o momentum de V/D é real ou sorte.
+   - Use os Six Factors (oTS/dTS, oTOV/dTOV, oORB/dDRB) para validar se o momentum de V/D é real (eficiência sustentável) ou sorte (variância de arremessos).
 
 4. HANDICAPS (REGRAS OBRIGATÓRIAS):
    - EVITE linhas exatas de +5.5. Prefira extremidades (+10 underdog claro, -5 favorito sólido).
@@ -524,7 +533,7 @@ SAÍDA OBRIGATÓRIA (JSON Estrito):
   "handicap_recomendado": "string",
   "alerta_lesao": "string",
   "keyFactor": "string (ex: ORTG vs DRTG cruzado indica Over, Edge de Net_Eff)",
-  "detailedAnalysis": "string (máximo 200 chars, foco no embate matemático dos últimos 14d)"
+  "detailedAnalysis": "string (máximo 200 chars, foco no embate matemático season-to-date)"
 }"""
 
 
@@ -567,20 +576,40 @@ def build_analysis_payload(
 
     return {
         "Confronto": f"{home} vs {away}",
-        "Metricas_Avancadas_14_Dias_Databallr": {
+        "Metricas_Temporada_Databallr": {
             "Home_Adv": {
                 "ortg_ataque": home_db.get('ortg'),
                 "drtg_defesa": home_db.get('drtg'),
-                "eficiencia_liquida_net_eff": home_db.get('net_eff'),
+                "net_rating": home_db.get('net_rating'),
+                "net_eff_impacto_arremessos": home_db.get('net_eff'),
+                "net_poss_impacto_posses": home_db.get('net_poss'),
                 "true_shooting_pct": home_db.get('o_ts'),
-                "rebote_ofensivo_pct": home_db.get('orb')
+                "rebote_ofensivo_pct": home_db.get('orb'),
+                "six_factors": {
+                    "oTS": home_db.get('o_ts_impact'),
+                    "oTOV": home_db.get('o_tov_impact'),
+                    "oORB": home_db.get('o_orb_impact'),
+                    "dTS": home_db.get('d_ts_impact'),
+                    "dTOV": home_db.get('d_tov_impact'),
+                    "dDRB": home_db.get('d_drb_impact')
+                }
             },
             "Away_Adv": {
                 "ortg_ataque": away_db.get('ortg'),
                 "drtg_defesa": away_db.get('drtg'),
-                "eficiencia_liquida_net_eff": away_db.get('net_eff'),
+                "net_rating": away_db.get('net_rating'),
+                "net_eff_impacto_arremessos": away_db.get('net_eff'),
+                "net_poss_impacto_posses": away_db.get('net_poss'),
                 "true_shooting_pct": away_db.get('o_ts'),
-                "rebote_ofensivo_pct": away_db.get('orb')
+                "rebote_ofensivo_pct": away_db.get('orb'),
+                "six_factors": {
+                    "oTS": away_db.get('o_ts_impact'),
+                    "oTOV": away_db.get('o_tov_impact'),
+                    "oORB": away_db.get('o_orb_impact'),
+                    "dTS": away_db.get('d_ts_impact'),
+                    "dTOV": away_db.get('d_tov_impact'),
+                    "dDRB": away_db.get('d_drb_impact')
+                }
             },
             "Instrucao_Cruzamento": (
                 "Projete (Home ORTG vs Away DRTG) e (Away ORTG vs Home DRTG) "
@@ -708,7 +737,7 @@ if __name__ == "__main__":
         print("Finalizando operação pacificamente para preservar recursos computacionais.")
         sys.exit(0)
 
-    print("🧠 Carregando tensores de eficiência Databallr (14 Dias)...")
+    print("🧠 Carregando tensores de eficiência Databallr (season-to-date)...")
     databallr_matrix = get_databallr_matrix()
 
     predictions = []
