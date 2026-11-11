@@ -563,6 +563,26 @@ class DataballrScraper:
             # [OTIMIZAÇÃO] Resolução de conflitos baseada em (team_id, period)
             upsert_mode = self._upsert_records(records)
 
+            # [CLEANUP] Remover períodos legados (ex.: 'last_14_days' de corridas
+            # antigas): só o season-to-date ('this_year') é fonte de verdade, e
+            # linhas duplicadas do mesmo time em outros períodos confundem o
+            # consumidor (predict_games).
+            try:
+                legacy_res = (
+                    self.supabase.table('databallr_team_stats')
+                    .delete()
+                    .neq('period', self.period)
+                    .execute()
+                )
+                legacy_data = getattr(legacy_res, 'data', None) or []
+                if legacy_data:
+                    logger.info(
+                        f"[CLEANUP] {len(legacy_data)} registros legados "
+                        f"(period != '{self.period}') removidos."
+                    )
+            except Exception as legacy_err:
+                logger.warning(f"[CLEANUP-WARN] Falha ao remover períodos legados: {legacy_err}")
+
             summary['periods_processed'][self.period] = {
                 'teams_processed': len(df),
                 'avg_net_rating': round(float(df['net_rating'].mean()), 2),
